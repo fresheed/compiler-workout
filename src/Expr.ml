@@ -36,12 +36,12 @@ let update x v s = fun y -> if x = y then v else s y
 let s = update "x" 1 @@ update "y" 2 @@ update "z" 3 @@ update "t" 4 empty
 
 (* Some testing; comment this definition out when submitting the solution. *)
-let _ =
-  List.iter
-    (fun x ->
-       try  Printf.printf "%s=%d\n" x @@ s x
-       with Failure s -> Printf.printf "%s\n" s
-    ) ["x"; "a"; "y"; "z"; "t"; "b"]
+(* let _ =
+ *   List.iter
+ *     (fun x ->
+ *        try  Printf.printf "%s=%d\n" x @@ s x
+ *        with Failure s -> Printf.printf "%s\n" s
+ *     ) ["x"; "a"; "y"; "z"; "t"; "b"] *)
 
 (* Expression evaluator
 
@@ -49,6 +49,28 @@ let _ =
  
    Takes a state and an expression, and returns the value of the expression in 
    the given state.
-*)
-let eval = failwith "Not implemented yet"
+ *)
+
+let rec eval st ex  = match ex with
+  | Const (value) -> value
+  | Var (name) -> st name
+  | Binop (op_str, arg1, arg2) ->
+     let conv = fun op a1 a2 -> if (op a1 a2) then 1 else 0 in
+     let op_mapping = [
+         ("!!", conv (fun x y -> (x != 0 || y !=0)));
+         ("&&", conv (fun x y -> (x != 0 && y !=0)));
+         ("==", conv (==));
+         ("!=", conv (!=));
+         ("<=", conv (<=));
+         ("<", conv (<));
+         (">=", conv (>=));
+         (">", conv (>));
+         ("+", (+));
+         ("-", (-));
+         ("*", ( * ));
+         ("/", (/));
+         ("%", (mod));
+       ]
+     in (List.assoc op_str op_mapping) (eval st arg1) (eval st arg2)
+;;
                     
