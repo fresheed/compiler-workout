@@ -41,10 +41,29 @@ module Expr =
        Takes a state and an expression, and returns the value of the expression in 
        the given state.
     *)
-    let eval _ = failwith "Not implemented yet"
-
+    let rec eval st ex  = match ex with
+      | Const (value) -> value
+      | Var (name) -> st name
+      | Binop (op_str, arg1, arg2) ->
+         let conv = fun op a1 a2 -> if (op a1 a2) then 1 else 0 in
+         let op_mapping = [
+             ("!!", conv (fun x y -> (x != 0 || y !=0)));
+             ("&&", conv (fun x y -> (x != 0 && y !=0)));
+             ("==", conv (==));
+             ("!=", conv (!=));
+             ("<=", conv (<=));
+             ("<", conv (<));
+             (">=", conv (>=));
+             (">", conv (>));
+             ("+", (+));
+             ("-", (-));
+             ("*", ( * ));
+             ("/", (/));
+             ("%", (mod));
+           ]
+         in (List.assoc op_str op_mapping) (eval st arg1) (eval st arg2)
   end
-                    
+    
 (* Simple statements: syntax and sematics *)
 module Stmt =
   struct
@@ -65,8 +84,12 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let eval _ = failwith "Not implemented yet"
-                                                         
+    let rec eval config program = match config, program  with
+      | (state, value::inp_rest, out), Read (var) -> (Expr.update var value state, inp_rest, out)
+      | (state, inp, out), Write (expr) -> (state, inp, out@[Expr.eval state expr])
+      | (state, inp, out), Assign (var, expr) -> (Expr.update var (Expr.eval state expr) state, inp, out)
+      | _, Seq (prog1, prog2) -> eval (eval config prog1) prog2
+                                           
   end
 
 (* The top-level definitions *)
