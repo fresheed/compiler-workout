@@ -48,8 +48,10 @@ module Expr =
        the given state.
      *)
     let conv = fun op a1 a2 -> if (op a1 a2) then 1 else 0
+    let lvl4_ops = [ 		(* LA *)
+        ("!!", conv (fun x y -> (x != 0 || y !=0)));	
+      ]
     let lvl3_ops = [ 		(* LA *)
-        ("!!", conv (fun x y -> (x != 0 || y !=0)));
         ("&&", conv (fun x y -> (x != 0 && y !=0)));
       ]
     let lvl2_ops = [ 		(* NA *)
@@ -69,7 +71,7 @@ module Expr =
         ("/", (/));
         ("%", (mod));
       ]
-    let op_mapping = lvl3_ops @ lvl2_ops @ lvl1_ops @ lvl0_ops
+    let op_mapping = lvl4_ops @ lvl3_ops @ lvl2_ops @ lvl1_ops @ lvl0_ops
     let rec eval st ex  = match ex with
       | Const (value) -> value
       | Var (name) -> st name
@@ -90,8 +92,8 @@ module Expr =
 	!(Util.expr 
 	    (fun x -> x)
 	     [|
-	       `Lefta, [ostap ("!!"), wrap_binop "!!";
-			ostap ("&&"), wrap_binop "&&";];
+	       `Lefta, [ostap ("!!"), wrap_binop "!!";];
+	       `Lefta, [ostap ("&&"), wrap_binop "&&";];
 	       `Nona, [ostap ("=="), wrap_binop "==";
 		       ostap ("!="), wrap_binop "!=";
 		       ostap ("<="), wrap_binop "<=";
