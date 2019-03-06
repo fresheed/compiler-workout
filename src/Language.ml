@@ -92,6 +92,7 @@ module Expr =
 	!(Util.expr 
 	    (fun x -> x)
 	     [|
+	       (* this is obviously redundant, but I haven't succeeded in refactoring it with List.map *)
 	       `Lefta, [ostap ("!!"), wrap_binop "!!";];
 	       `Lefta, [ostap ("&&"), wrap_binop "&&";];
 	       `Nona, [ostap ("=="), wrap_binop "==";
