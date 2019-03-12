@@ -5,6 +5,7 @@ open GT
 
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap.Combinators
+open Ostap.Util
        
 (* Simple expressions: syntax and semantics *)
 module Expr =
@@ -44,16 +45,66 @@ module Expr =
        Takes a state and an expression, and returns the value of the expression in 
        the given state.
      *)                                                       
-    let eval _ _ = failwith "Not yet implemented"
-
+    let conv = fun op a1 a2 -> if (op a1 a2) then 1 else 0
+    let lvl4_ops = [ 		(* LA *)
+        ("!!", conv (fun x y -> (x != 0 || y !=0)));	
+      ]
+    let lvl3_ops = [ 		(* LA *)
+        ("&&", conv (fun x y -> (x != 0 && y !=0)));
+      ]
+    let lvl2_ops = [ 		(* NA *)
+        ("==", conv (==));
+        ("!=", conv (!=));
+        ("<=", conv (<=));
+        ("<", conv (<));
+        (">=", conv (>=));
+        (">", conv (>));	
+      ]
+    let lvl1_ops = [		(* LA *)
+	("+", (+));
+        ("-", (-));	
+      ]
+    let lvl0_ops = [		(* LA *)
+        ("*", ( * ));
+        ("/", (/));
+        ("%", (mod));
+      ]
+    let op_mapping = lvl4_ops @ lvl3_ops @ lvl2_ops @ lvl1_ops @ lvl0_ops
+    let rec eval st ex  = match ex with
+      | Const (value) -> value
+      | Var (name) -> st name
+      | Binop (op_str, arg1, arg2) ->
+      	 (List.assoc op_str op_mapping) (eval st arg1) (eval st arg2)
     (* Expression parser. You can use the following terminals:
 
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
          DECIMAL --- a decimal constant [0-9]+ as a string
                                                                                                                   
     *)
-    ostap (                                      
-      parse: empty {failwith "Not yet implemented"}
+    let wrap_binop symbol = fun x y -> Binop (symbol, x, y)
+    ostap (
+      parse:
+	!(Ostap.Util.expr 
+	    (fun x -> x)
+	     [|
+	       (* this is obviously redundant, but I haven't succeeded in refactoring it with List.map *)
+	       `Lefta, [ostap ("!!"), wrap_binop "!!";];
+	       `Lefta, [ostap ("&&"), wrap_binop "&&";];
+	       `Nona, [ostap ("=="), wrap_binop "==";
+		       ostap ("!="), wrap_binop "!=";
+		       ostap ("<="), wrap_binop "<=";
+		       ostap ("<"), wrap_binop "<";
+		       ostap (">="), wrap_binop ">=";
+		       ostap (">"), wrap_binop ">";];
+	       `Lefta, [ostap ("+"), wrap_binop "+";
+			ostap ("-"), wrap_binop "-";];
+	       `Lefta, [ostap ("*"), wrap_binop "*";
+			ostap ("/"), wrap_binop "/";
+			ostap ("%"), wrap_binop "%";];	       
+      	     |]
+	    primary
+	);
+      primary: v:IDENT {Var v} | n:DECIMAL {Const n} | -"(" parse -")"
     )
     
   end
@@ -78,13 +129,18 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let eval _ _ = failwith "Not yet implemented"
-
+    let rec eval config program = match config, program  with
+      | (state, value::inp_rest, out), Read (var) -> (Expr.update var value state, inp_rest, out)
+      | (state, inp, out), Write (expr) -> (state, inp, out@[Expr.eval state expr])
+      | (state, inp, out), Assign (var, expr) -> (Expr.update var (Expr.eval state expr) state, inp, out)
+      | _, Seq (prog1, prog2) -> eval (eval config prog1) prog2
     (* Statement parser *)
-    ostap (
-      parse: empty {failwith "Not yet implemented"}
+    ostap (	  
+      single: v:IDENT ":=" e:base {Assign (v, e)} | "read" "(" v:IDENT ")" {Read v} | "write" "(" e:base ")" {Write e};
+      base: !(Expr.parse);
+      parse: e1:single ";" e2:parse {Seq (e1, e2)} | e:single
     )
-      
+    
   end
 
 (* The top-level definitions *)
