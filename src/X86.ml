@@ -40,7 +40,8 @@ type instr =
 (* pops from the hardware stack to the operand          *) | Pop   of opnd
 (* call a function by a name                            *) | Call  of string
 (* returns from a function                              *) | Ret
-
+(* comment                              *) | Comment
+                                                               
 (* Instruction printer *)
 let show instr =
   let binop = function
@@ -69,6 +70,7 @@ let show instr =
   | Pop    s           -> Printf.sprintf "\tpopl\t%s"      (opnd s)
   | Ret                -> "\tret"
   | Call   p           -> Printf.sprintf "\tcall\t%s" p
+  | Comment              -> Printf.sprintf "\t// ---"
 
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
@@ -85,6 +87,8 @@ let compile_instr env instr = match instr with
   | CONST n -> let loc, env' = env#allocate in env', [Mov (L n, loc)]
   | WRITE -> let loc, env' = env#pop in
              env', [Push loc; Call "Lwrite"; stack_restore]
+  | READ -> let loc, env' = env#allocate in
+            env', [Push eax; Call "Lread"; Mov (eax, loc); Pop eax]
   | ST var -> let env' = env#global var in
               let loc, env'' = env'#pop in
               env'', [Mov (loc, M (env''#loc var))]
@@ -93,10 +97,10 @@ let compile_instr env instr = match instr with
               env'', [Mov (M (env''#loc var), loc)]
               
 let rec compile env program = match program with
-  | [] -> env, []
+  | [] -> env, [Comment]
   | cmd::program' -> let (env', cmd_compiled) = compile_instr env cmd in
                      let (env'', program_compiled) = compile env' program' in
-                     env'', cmd_compiled @ program_compiled
+                     env'', [Comment] @ cmd_compiled  @ program_compiled
                      
 
 (* A set of strings *)           
@@ -173,7 +177,7 @@ let genasm prog =
        Buffer.add_string asm (Printf.sprintf "%s:\t.int\t0\n" s)
     )
     env#globals;
-  Printf.printf "\n \n \n REMOVE DEBUG OUTPUT! \n%s" "";
+  Printf.printf "\n \n \n REMOVE DEBUG OUTPUT AND COMMENT COMMAND! \n%s" "";
   Buffer.add_string asm "\t.text\n";
   Buffer.add_string asm "\t.globl\tmain\n";
   Buffer.add_string asm "main:\n";
