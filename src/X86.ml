@@ -79,8 +79,25 @@ open SM
 
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
-*)
-let compile _ _ = failwith "Not yet implemented"
+ *)
+let stack_restore = Binop ("+", L 8, esp)
+let compile_instr env instr = match instr with
+  | CONST n -> let loc, env' = env#allocate in env', [Mov (L n, loc)]
+  | WRITE -> let loc, env' = env#pop in
+             env', [Push loc; Call "Lwrite"; stack_restore]
+  | ST var -> let env' = env#global var in
+              let loc, env'' = env'#pop in
+              env'', [Mov (loc, M (env''#loc var))]
+  | LD var -> let env' = env#global var in
+              let loc, env'' = env'#allocate in
+              env'', [Mov (M (env''#loc var), loc)]
+              
+let rec compile env program = match program with
+  | [] -> env, []
+  | cmd::program' -> let (env', cmd_compiled) = compile_instr env cmd in
+                     let (env'', program_compiled) = compile env' program' in
+                     env'', cmd_compiled @ program_compiled
+                     
 
 (* A set of strings *)           
 module S = Set.Make (String)
@@ -140,9 +157,15 @@ let compile_unit env scode =
 
 (* Generates an assembler text for a program: first compiles the program into
    the stack code, then generates x86 assember code, then prints the assembler file
-*)
+ *)
+let ins2str = GT.transform(SM.insn) (new @SM.insn[show]) ()
+let print_ins ins = Printf.printf "%s\n" (ins2str ins)
+                    
 let genasm prog =
-  let env, code = compile_unit (new env) (SM.compile prog) in
+  let cpd = SM.compile prog in
+  List.map print_ins cpd;
+  (* Printf.printf "foobar\n"; *)
+  let env, code = compile_unit (new env) cpd in
   let asm = Buffer.create 1024 in
   Buffer.add_string asm "\t.data\n";
   List.iter
@@ -150,6 +173,7 @@ let genasm prog =
        Buffer.add_string asm (Printf.sprintf "%s:\t.int\t0\n" s)
     )
     env#globals;
+  Printf.printf "\n \n \n REMOVE DEBUG OUTPUT! \n%s" "";
   Buffer.add_string asm "\t.text\n";
   Buffer.add_string asm "\t.globl\tmain\n";
   Buffer.add_string asm "main:\n";
