@@ -82,19 +82,54 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
  *)
-let stack_restore = Binop ("+", L 8, esp)
+let stack_restore = Binop ("+", L 4, esp)
+
+let compile_binop op loc_x loc_y loc_r =
+  let sub_seq = [Mov (loc_y, eax); Binop ("-", loc_x, eax); Mov (eax, loc_r)]
+  in match op with
+     | "+" -> [Mov (loc_y, eax); Binop ("+", loc_x, eax); Mov (eax, loc_r)]
+     | "-" -> sub_seq
+     | "*" -> [Mov (loc_y, eax); Binop ("*", loc_x, eax); Mov (eax, loc_r)]
+     | "/" -> [Mov (loc_y, eax); Cltd; IDiv loc_x; Mov (eax, loc_r)]
+     | "%" -> [Mov (loc_y, eax); Cltd; IDiv loc_x; Mov (edx, loc_r)]
+     | "==" -> sub_seq @ [Mov (L 0, eax); Set ("z", "%al"); Mov (eax, loc_r)]
+     | "<=" -> sub_seq @ [Mov (L 0, eax); Mov (L 0, edx);
+                          Set ("z", "%al"); Set ("s", "%dl"); 
+                          Binop ("!!", edx, eax); Mov (eax, loc_r)]
+     | "<" -> sub_seq @ [Mov (L 0, eax); Set ("s", "%al"); Mov (eax, loc_r)]
+     | ">=" -> sub_seq @ [Mov (L 0, eax); Mov (L 0, edx);
+                          Set ("z", "%al"); Set ("ns", "%dl"); 
+                          Binop ("!!", edx, eax); Mov (eax, loc_r)]
+     | ">" -> sub_seq @ [Mov (L 0, eax); Mov (L 0, edx);
+                         Set ("nz", "%al"); Set ("ns", "%dl"); 
+                         Binop ("&&", edx, eax); Mov (eax, loc_r)]
+     | "!!" -> [Mov (L 0, eax); Mov (L 0, edx);
+                Binop ("!!", loc_x, loc_x); Set ("nz", "%dl");
+                Binop ("!!", loc_y, loc_y); Set ("nz", "%al");                
+                Binop ("!!", edx, eax); Mov (eax, loc_r)]
+     | "&&" -> [Mov (L 0, eax); Mov (L 0, edx);
+                Binop ("!!", loc_x, loc_x); Set ("nz", "%dl");
+                Binop ("!!", loc_y, loc_y); Set ("nz", "%al");                
+                Binop ("&&", edx, eax); Mov (eax, loc_r)]
+
+
+             
 let compile_instr env instr = match instr with
   | CONST n -> let loc, env' = env#allocate in env', [Mov (L n, loc)]
   | WRITE -> let loc, env' = env#pop in
              env', [Push loc; Call "Lwrite"; stack_restore]
   | READ -> let loc, env' = env#allocate in
-            env', [Push eax; Call "Lread"; Mov (eax, loc); Pop eax]
+            env', [Call "Lread"; Mov (eax, loc)]
   | ST var -> let env' = env#global var in
               let loc, env'' = env'#pop in
               env'', [Mov (loc, M (env''#loc var))]
   | LD var -> let env' = env#global var in
               let loc, env'' = env'#allocate in
               env'', [Mov (M (env''#loc var), loc)]
+  | BINOP op -> let loc_x, loc_y, env' = env#pop2 in
+                let loc_r, env'' = env'#allocate in
+                env'', compile_binop op loc_x loc_y loc_r
+                
               
 let rec compile env program = match program with
   | [] -> env, [Comment]
