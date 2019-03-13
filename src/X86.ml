@@ -93,6 +93,7 @@ let compile_binop op loc_x loc_y loc_r =
      | "/" -> [Mov (loc_y, eax); Cltd; IDiv loc_x; Mov (eax, loc_r)]
      | "%" -> [Mov (loc_y, eax); Cltd; IDiv loc_x; Mov (edx, loc_r)]
      | "==" -> sub_seq @ [Mov (L 0, eax); Set ("z", "%al"); Mov (eax, loc_r)]
+     | "!=" -> sub_seq @ [Mov (L 0, eax); Set ("nz", "%al"); Mov (eax, loc_r)]
      | "<=" -> sub_seq @ [Mov (L 0, eax); Mov (L 0, edx);
                           Set ("z", "%al"); Set ("s", "%dl"); 
                           Binop ("!!", edx, eax); Mov (eax, loc_r)]
@@ -202,8 +203,7 @@ let print_ins ins = Printf.printf "%s\n" (ins2str ins)
                     
 let genasm prog =
   let cpd = SM.compile prog in
-  List.map print_ins cpd;
-  (* Printf.printf "foobar\n"; *)
+  (* List.map print_ins cpd; *)
   let env, code = compile_unit (new env) cpd in
   let asm = Buffer.create 1024 in
   Buffer.add_string asm "\t.data\n";
@@ -212,7 +212,7 @@ let genasm prog =
        Buffer.add_string asm (Printf.sprintf "%s:\t.int\t0\n" s)
     )
     env#globals;
-  Printf.printf "\n \n \n REMOVE DEBUG OUTPUT AND COMMENT COMMAND! \n%s" "";
+  (* Printf.printf "\n \n \n REMOVE DEBUG OUTPUT AND COMMENT COMMAND! \n%s" ""; *)
   Buffer.add_string asm "\t.text\n";
   Buffer.add_string asm "\t.globl\tmain\n";
   Buffer.add_string asm "main:\n";
