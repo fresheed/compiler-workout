@@ -163,7 +163,7 @@ module Stmt =
       while_loop: "while" cond:base "do" body:parse "od" {While (cond, body)};
       seq: cmd1:single ";" cmd2:parse {Seq (cmd1, cmd2)};
 
-      parse: single | ite | while_loop | seq
+      parse: ite | while_loop | seq | single
     )      
   end
 

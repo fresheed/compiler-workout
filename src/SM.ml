@@ -28,19 +28,32 @@ type config = int list * Stmt.config
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
 *)                         
 (* let rec eval env conf prog = failwith "Not yet implemented" *)
-let rec eval env config2 program =
+let rec eval env (stack, (state, inp, out as subconf) as config2) program =
+  let eval_expr expr = Language.Expr.eval state expr in
   let eval_cmd config command = match config, command with
-    | (y::x::stack, ((state, inp, out) as subconf)), BINOP (str_op)
+    | (y::x::rest, _), BINOP (str_op)
       -> let result=Language.Expr.eval state (Language.Expr.Binop (str_op, Language.Expr.Const (x), Language.Expr.Const (y)))
-         in (result::stack, subconf)
-    | (stack, subconf), CONST (value) -> (value::stack, subconf)
-    | (stack, (state, value::inp, out)), READ -> (value::stack, (state, inp, out))
-    | (value::stack, (state, inp, out)), WRITE -> (stack, (state, inp, out@[value]))
-    | (stack, ((state, _, _) as subconf)), LD (var) -> ((state var)::stack, subconf)
-    | (value::stack, (state, inp, out)), ST (var) -> (stack, (Language.Expr.update var value state, inp, out))
-  in match config2, program with
-     | config2, [] -> config2
-     | config2, cmd::rest -> eval env (eval_cmd config2 cmd) rest(* Top-level evaluation
+         in (result::rest, subconf)
+              
+    | (_, _), CONST (value) -> (value::stack, subconf)
+    | (_, (_, value::rest, _)), READ -> (value::stack, (state, rest, out))
+    | (value::rest, (_, _, _)), WRITE -> (rest, (state, inp, out@[value]))
+    | (_, _), LD (var) -> ((state var)::stack, subconf)
+    | (value::rest, _), ST (var) -> (rest, (Language.Expr.update var value state, inp, out))
+    | _, LABEL _ -> config
+
+  in match program with
+     | [] -> config2
+     | (JMP label)::_ -> eval env config2 (env#labeled label)
+     | (CJMP (mode, label))::next ->
+        let top::rest = stack in
+        let goto = (env#labeled label) in
+        let target = if ((mode=="z") == (top == 0)) then goto else next in
+        eval env (rest, subconf) target
+     (* other *)
+     | cmd::rest -> eval env (eval_cmd config2 cmd) rest
+
+(* Top-level evaluation
 
      val run : prg -> int list -> int list
 
