@@ -89,51 +89,60 @@ open SM
 let stack_restore = Binop ("+", L 4, esp)
 
 let compile_binop op loc_x loc_y loc_r =
-  let sub_seq = [Mov (loc_y, eax); Binop ("-", loc_x, eax); Mov (eax, loc_r)]
+  let y2a_compute_send comp = [Mov (loc_y, eax)] @ comp @ [Mov (eax, loc_r)] in
+  let compareyx_single_send flag = [Mov (loc_y, eax); Binop ("-", loc_x, eax);
+                                    Mov (L 0, eax); Set (flag, "%al"); Mov (eax, loc_r)] in
+  let compareyx_double_send flag1 flag2 joiner = [Mov (loc_y, eax); Binop ("-", loc_x, eax); Mov (eax, loc_r);
+                                                  Mov (L 0, eax); Mov (L 0, edx); Set (flag1, "%al"); Set (flag2, "%dl"); 
+                                                  Binop (joiner, edx, eax); Mov (eax, loc_r)] in
+  let logicop_send op =
+    let signum arg = [Push ebp; Mov (arg, ebp); Binop ("!!", ebp, ebp); Pop ebp]
+    in [Mov (L 0, eax); Mov (L 0, edx)]
+       @ signum loc_x @ [Set ("nz", "%dl")] @ signum loc_y
+       @ [ Set ("nz", "%al"); Binop (op, edx, eax); Mov (eax, loc_r)]
   in match op with
-     | "+" -> [Mov (loc_y, eax); Binop ("+", loc_x, eax); Mov (eax, loc_r)]
-     | "-" -> sub_seq
-     | "*" -> [Mov (loc_y, eax); Binop ("*", loc_x, eax); Mov (eax, loc_r)]
-     | "/" -> [Mov (loc_y, eax); Cltd; IDiv loc_x; Mov (eax, loc_r)]
-     | "%" -> [Mov (loc_y, eax); Cltd; IDiv loc_x; Mov (edx, loc_r)]
-     | "==" -> sub_seq @ [Mov (L 0, eax); Set ("z", "%al"); Mov (eax, loc_r)]
-     | "!=" -> sub_seq @ [Mov (L 0, eax); Set ("nz", "%al"); Mov (eax, loc_r)]
-     | "<=" -> sub_seq @ [Mov (L 0, eax); Mov (L 0, edx);
-                          Set ("z", "%al"); Set ("s", "%dl"); 
-                          Binop ("!!", edx, eax); Mov (eax, loc_r)]
-     | "<" -> sub_seq @ [Mov (L 0, eax); Set ("s", "%al"); Mov (eax, loc_r)]
-     | ">=" -> sub_seq @ [Mov (L 0, eax); Mov (L 0, edx);
-                          Set ("z", "%al"); Set ("ns", "%dl"); 
-                          Binop ("!!", edx, eax); Mov (eax, loc_r)]
-     | ">" -> sub_seq @ [Mov (L 0, eax); Mov (L 0, edx);
-                         Set ("nz", "%al"); Set ("ns", "%dl"); 
-                         Binop ("&&", edx, eax); Mov (eax, loc_r)]
-     | "!!" -> [Mov (L 0, eax); Mov (L 0, edx);
-                Binop ("!!", loc_x, loc_x); Set ("nz", "%dl");
-                Binop ("!!", loc_y, loc_y); Set ("nz", "%al");                
-                Binop ("!!", edx, eax); Mov (eax, loc_r)]
-     | "&&" -> [Mov (L 0, eax); Mov (L 0, edx);
-                Binop ("!!", loc_x, loc_x); Set ("nz", "%dl");
-                Binop ("!!", loc_y, loc_y); Set ("nz", "%al");                
-                Binop ("&&", edx, eax); Mov (eax, loc_r)]
+     | "+" -> y2a_compute_send [Binop ("+", loc_x, eax)]
+     | "-" -> y2a_compute_send [Binop ("-", loc_x, eax)]
+     | "*" -> y2a_compute_send [Binop ("*", loc_x, eax)]
+     | "/" -> y2a_compute_send [Cltd; IDiv loc_x]
+     | "%" -> y2a_compute_send [Cltd; IDiv loc_x; Mov (edx, eax)]
+                
+     | "==" -> compareyx_single_send "z"
+     | "!=" -> compareyx_single_send "nz"
+     | "<=" -> compareyx_double_send "z" "s" "!!"
+     | "<" -> compareyx_single_send "s"
+     | ">=" -> compareyx_double_send "z" "ns" "!!"
+     | ">" -> compareyx_double_send "nz" "ns" "&&"
+                                    
+     | "!!" -> logicop_send "!!"
+     | "&&" -> logicop_send "&&"
 
 
 
-let compile_instr env instr = match instr with
-  | CONST n -> let loc, env' = env#allocate in env', [Mov (L n, loc)]
-  | WRITE -> let loc, env' = env#pop in
-             env', [Push loc; Call "Lwrite"; stack_restore]
-  | READ -> let loc, env' = env#allocate in
-            env', [Call "Lread"; Mov (eax, loc)]
-  | ST var -> let env' = env#global var in
-              let loc, env'' = env'#pop in
-              env'', [Mov (loc, M (env''#loc var))]
-  | LD var -> let env' = env#global var in
-              let loc, env'' = env'#allocate in
-              env'', [Mov (M (env''#loc var), loc)]
-  | BINOP op -> let loc_x, loc_y, env' = env#pop2 in
-                let loc_r, env'' = env'#allocate in
-                env'', compile_binop op loc_x loc_y loc_r
+let compile_instr env instr =
+  let force_reg_mov loc_from loc_to = match loc_from, loc_to with
+    | R _ , _
+    | L _, _
+    | _ , R _
+    | _, L _ -> [Mov (loc_from, loc_to)]
+    | _, _ -> [Mov (loc_from, eax); Mov (eax, loc_to)]
+  in match instr with
+     | CONST n -> let loc, env' = env#allocate in env', [Mov (L n, loc)]
+     | WRITE -> let loc, env' = env#pop in
+                env', [Push loc; Call "Lwrite"; stack_restore]
+     | READ -> let loc, env' = env#allocate in
+               env', [Call "Lread"; Mov (eax, loc)]
+     | ST var -> let env' = env#global var in
+                 let loc, env'' = env'#pop in
+                 (*env'',  [Mov (loc, M (env''#loc var))] *)
+                 env'', force_reg_mov loc (M (env''#loc var))
+     | LD var -> let env' = env#global var in
+                 let loc, env'' = env'#allocate in
+                 (* env'', [Mov (M (env''#loc var), loc)] *)
+                 env'', force_reg_mov (M (env''#loc var)) loc
+     | BINOP op -> let loc_x, loc_y, env' = env#pop2 in
+                   let loc_r, env'' = env'#allocate in
+                   env'', compile_binop op loc_x loc_y loc_r
 
 
 let rec compile env program = match program with
