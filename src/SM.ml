@@ -48,7 +48,7 @@ let rec eval env (stack, (state, inp, out as subconf) as config2) program =
      | (CJMP (mode, label))::next ->
         let top::rest = stack in
         let goto = (env#labeled label) in
-        let target = if ((mode=="z") == (top == 0)) then goto else next in
+        let target = if ((mode="z") == (top == 0)) then goto else next in
         eval env (rest, subconf) target
      (* other *)
      | cmd::rest -> eval env (eval_cmd config2 cmd) rest
@@ -89,27 +89,32 @@ class compiler =
       in "loop_" ^ suffix, "od_" ^ suffix, self#next_label
   end
 
-let rec compile =
+let rec compile program =
   let rec expr = function
   | Expr.Var   x          -> [LD x]
   | Expr.Const n          -> [CONST n]
   | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
   in
   let rec compile_impl compiler = function
-    | Stmt.Seq (s1, s2)  -> compile_impl compiler s1 @ compile_impl compiler s2
-    | Stmt.Read x        -> [READ; ST x]
-    | Stmt.Write e       -> expr e @ [WRITE]
-    | Stmt.Assign (x, e) -> expr e @ [ST x]
-    | Stmt.Skip -> []
+    | Stmt.Seq (s1, s2)  -> let prog1, compiler' = compile_impl compiler s1 in
+                            let prog2, compiler'' = compile_impl compiler' s2 in
+                            prog1 @ prog2, compiler''
+    | Stmt.Read x        -> [READ; ST x], compiler
+    | Stmt.Write e       -> expr e @ [WRITE], compiler
+    | Stmt.Assign (x, e) -> expr e @ [ST x], compiler
+    | Stmt.Skip -> [], compiler
     | Stmt.If (cond, positive, negative) ->
        let else_label, fi_label, compiler' = compiler#get_if_labels in
-       expr cond @ [CJMP ("z", else_label)] @ compile_impl compiler' positive
-       @ [JMP fi_label; LABEL else_label] @ compile_impl compiler' negative
-       @ [LABEL fi_label]
+       let prog_pos, compiler'' = compile_impl compiler' positive in
+       let prog_neg, compiler''' = compile_impl compiler'' negative in
+       expr cond @ [CJMP ("z", else_label)] @ prog_pos
+       @ [JMP fi_label; LABEL else_label] @ prog_neg
+       @ [LABEL fi_label], compiler'''
     | Stmt.While (cond, body) -> 
        let loop_label, od_label, compiler' = compiler#get_while_labels in
+       let prog_body, compiler'' = compile_impl compiler' body in       
        [LABEL loop_label] @ expr cond @ [CJMP ("z", od_label)]
-       @ compile_impl compiler' body @ [JMP loop_label; LABEL od_label]
-  in compile_impl (new compiler)
+       @ prog_body @ [JMP loop_label; LABEL od_label], compiler''
+  in fst (compile_impl (new compiler) program)
 
          

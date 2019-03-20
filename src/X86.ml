@@ -143,6 +143,13 @@ let compile_instr env instr =
      | BINOP op -> let loc_x, loc_y, env' = env#pop2 in
                    let loc_r, env'' = env'#allocate in
                    env'', compile_binop op loc_x loc_y loc_r
+     | LABEL label -> env, [Label label]
+     | JMP label -> env, [Jmp label]
+     | CJMP (mode, label) ->
+        let loc_arg, env' = env#pop in
+        let loc_res, env'' = env'#allocate in
+        (* Force evaluate stack top because expression may not include computations at all *)
+        env'', compile_binop "!!" loc_arg loc_arg loc_res @ [CJmp (mode, label)]
 
 
 let rec compile env program = match program with
@@ -210,9 +217,15 @@ let compile_unit env scode =
 
 (* Generates an assembler text for a program: first compiles the program into
    the stack code, then generates x86 assember code, then prints the assembler file
-*)
+ *)
+
+let ins2str = GT.transform(SM.insn) (new @SM.insn[show]) ()
+let print_ins ins = Printf.printf "%s\n" (ins2str ins)    
+    
 let genasm prog =
-  let env, code = compile_unit (new env) (SM.compile prog) in
+  let cpd = SM.compile prog in
+  (* List.map print_ins cpd; *)
+  let env, code = compile_unit (new env) cpd in
   let asm = Buffer.create 1024 in
   Buffer.add_string asm "\t.data\n";
   List.iter

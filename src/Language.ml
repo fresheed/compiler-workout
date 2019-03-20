@@ -161,9 +161,10 @@ module Stmt =
                                       
       ite: "if" cond:base "then" positive:parse "else" negative:parse "fi" {If (cond, positive, negative)};
       while_loop: "while" cond:base "do" body:parse "od" {While (cond, body)};
-      seq: cmd1:single ";" cmd2:parse {Seq (cmd1, cmd2)};
+      grouped: ite | while_loop;
+      seq: cmd1:(single | grouped)  ";" cmd2:parse {Seq (cmd1, cmd2)};
 
-      parse: ite | while_loop | seq | single
+      parse: seq | grouped | single
     )      
   end
 
