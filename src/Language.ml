@@ -122,7 +122,8 @@ module Stmt =
     (* empty statement                  *) | Skip
     (* conditional                      *) | If     of Expr.t * t * t
     (* loop with a pre-condition        *) | While  of Expr.t * t
-    (* loop with a post-condition       *) (* add yourself *)  with show
+    (* loop with a post-condition       *) | RepeatUntil of Expr.t * t
+    with show
                                                                     
     (* The type of configuration: a state, an input stream, an output stream *)
     type config = Expr.state * int list * int list 
@@ -147,7 +148,13 @@ module Stmt =
                                             else eval config negative
       | _, (While (cond, body) as loop) -> if (eval_expr cond) != 0
                                            then eval config (Seq (body, loop))
-                                           else config (* don't use skip *)
+                                           else config
+      | _, (RepeatUntil (cond, body) as loop) ->
+         let (state', input', output' as config') = eval config body in
+         if (Expr.eval state' cond) == 0
+         then eval config' loop
+         else config'
+                                                  
 
     let rec build_ite_tree (cond, positive as if_branch) elif_branches else_branch_opt =
       match elif_branches, else_branch_opt with
@@ -170,10 +177,9 @@ module Stmt =
       elif_branch: "elif" cond:base "then" positive:parse {(cond, positive)};
       else_branch: "else" negative:parse {negative};
       ite: itb:if_then_branch elifbs:(elif_branch*) ebopt:(else_branch?) "fi" {build_ite_tree itb elifbs ebopt};
-      (* it: "if" cond:base "then" positive:parse "fi" {If (cond, positive, Skip)};
-       * ite: "if" cond:base "then" positive:parse "else" negative:parse "fi" {If (cond, positive, negative)}; *)
       while_loop: "while" cond:base "do" body:parse "od" {While (cond, body)};
-      grouped: ite | while_loop;
+      repeat_loop: "repeat" body:parse "until" cond:base {RepeatUntil (cond, body)};
+      grouped: ite | while_loop | repeat_loop;
       seq: cmd1:(single | grouped)  ";" cmd2:parse {Seq (cmd1, cmd2)};
 
       parse: seq | grouped | single
