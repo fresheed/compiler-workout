@@ -87,6 +87,9 @@ class compiler =
     method get_while_labels =
       let suffix = string_of_int label_count
       in "loop_" ^ suffix, "od_" ^ suffix, self#next_label
+    method get_repeatuntil_label =
+      let suffix = string_of_int label_count
+      in "repeat_" ^ suffix, self#next_label
   end
 
 let rec compile program =
@@ -115,6 +118,10 @@ let rec compile program =
        let prog_body, compiler'' = compile_impl compiler' body in       
        [LABEL loop_label] @ expr cond @ [CJMP ("z", od_label)]
        @ prog_body @ [JMP loop_label; LABEL od_label], compiler''
+    | Stmt.RepeatUntil (cond, body) ->
+       let loop_label, compiler' = compiler#get_repeatuntil_label in
+       let prog_body, compiler'' = compile_impl compiler' body in
+       [LABEL loop_label] @ prog_body @ expr cond @ [CJMP ("z", loop_label)], compiler''
   in fst (compile_impl (new compiler) program)
 
          
