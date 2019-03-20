@@ -148,7 +148,14 @@ module Stmt =
       | _, (While (cond, body) as loop) -> if (eval_expr cond) != 0
                                            then eval config (Seq (body, loop))
                                            else config (* don't use skip *)
-                                   
+
+    let rec build_ite_tree (cond, positive as if_branch) elif_branches else_branch_opt =
+      match elif_branches, else_branch_opt with
+      | elif::rest, _ ->
+         let subtree = build_ite_tree elif rest else_branch_opt in
+         If (cond, positive, subtree)
+      | [], None -> If (cond, positive, Skip)
+      | [], Some else_cmd -> If (cond, positive, else_cmd)
     (* Statement parser *)
     ostap (	  
       base: !(Expr.parse);
@@ -158,8 +165,13 @@ module Stmt =
       write: "write" "(" e:base ")" {Write e};
       skip: "skip" {Skip};
       single: assign | read | write | skip;
-                                      
-      ite: "if" cond:base "then" positive:parse "else" negative:parse "fi" {If (cond, positive, negative)};
+
+      if_then_branch: "if" cond:base "then" positive:parse {(cond, positive)};
+      elif_branch: "elif" cond:base "then" positive:parse {(cond, positive)};
+      else_branch: "else" negative:parse {negative};
+      ite: itb:if_then_branch elifbs:(elif_branch*) ebopt:(else_branch?) "fi" {build_ite_tree itb elifbs ebopt};
+      (* it: "if" cond:base "then" positive:parse "fi" {If (cond, positive, Skip)};
+       * ite: "if" cond:base "then" positive:parse "else" negative:parse "fi" {If (cond, positive, negative)}; *)
       while_loop: "while" cond:base "do" body:parse "od" {While (cond, body)};
       grouped: ite | while_loop;
       seq: cmd1:(single | grouped)  ";" cmd2:parse {Seq (cmd1, cmd2)};
