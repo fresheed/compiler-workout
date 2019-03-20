@@ -76,14 +76,40 @@ let run p i =
    Takes a program in the source language and returns an equivalent program for the
    stack machine
 *)
+class compiler =
+  object (self)
+    val label_count = 0
+
+    method next_label = {< label_count = label_count+1 >}
+    method get_if_labels =
+      let suffix = string_of_int label_count
+      in "else_" ^ suffix, "fi_" ^ suffix, self#next_label
+    method get_while_labels =
+      let suffix = string_of_int label_count
+      in "loop_" ^ suffix, "od_" ^ suffix, self#next_label
+  end
+
 let rec compile =
   let rec expr = function
   | Expr.Var   x          -> [LD x]
   | Expr.Const n          -> [CONST n]
   | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
   in
-  function
-  | Stmt.Seq (s1, s2)  -> compile s1 @ compile s2
-  | Stmt.Read x        -> [READ; ST x]
-  | Stmt.Write e       -> expr e @ [WRITE]
-  | Stmt.Assign (x, e) -> expr e @ [ST x]
+  let rec compile_impl compiler = function
+    | Stmt.Seq (s1, s2)  -> compile_impl compiler s1 @ compile_impl compiler s2
+    | Stmt.Read x        -> [READ; ST x]
+    | Stmt.Write e       -> expr e @ [WRITE]
+    | Stmt.Assign (x, e) -> expr e @ [ST x]
+    | Stmt.Skip -> []
+    | Stmt.If (cond, positive, negative) ->
+       let else_label, fi_label, compiler' = compiler#get_if_labels in
+       expr cond @ [CJMP ("z", else_label)] @ compile_impl compiler' positive
+       @ [JMP fi_label; LABEL else_label] @ compile_impl compiler' negative
+       @ [LABEL fi_label]
+    | Stmt.While (cond, body) -> 
+       let loop_label, od_label, compiler' = compiler#get_while_labels in
+       [LABEL loop_label] @ expr cond @ [CJMP ("z", od_label)]
+       @ compile_impl compiler' body @ [JMP loop_label; LABEL od_label]
+  in compile_impl (new compiler)
+
+         
