@@ -179,7 +179,8 @@ module Stmt =
       ite: itb:if_then_branch elifbs:(elif_branch*) ebopt:(else_branch?) "fi" {build_ite_tree itb elifbs ebopt};
       while_loop: "while" cond:base "do" body:parse "od" {While (cond, body)};
       repeat_loop: "repeat" body:parse "until" cond:base {RepeatUntil (cond, body)};
-      grouped: ite | while_loop | repeat_loop;
+      for_loop: "for" init:parse "," cond:base "," update:parse "do" body:parse "od" {Seq (init, While (cond, Seq (body, update)))};
+      grouped: ite | while_loop | repeat_loop | for_loop;
       seq: cmd1:(single | grouped)  ";" cmd2:parse {Seq (cmd1, cmd2)};
 
       parse: seq | grouped | single
