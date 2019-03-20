@@ -133,17 +133,37 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let rec eval config program = match config, program  with
-      | (state, value::inp_rest, out), Read (var) -> (Expr.update var value state, inp_rest, out)
-      | (state, inp, out), Write (expr) -> (state, inp, out@[Expr.eval state expr])
-      | (state, inp, out), Assign (var, expr) -> (Expr.update var (Expr.eval state expr) state, inp, out)
+    let rec eval (state, input, output as config) program =
+      let eval_expr expr = Expr.eval state expr in
+      let set_var var value = Expr.update var value state in
+      match config, program with
+      | (_, value::inp_rest, out), Read (var) -> (set_var var value, inp_rest, out)
+      | (state, inp, out), Write (expr) -> (state, inp, out@[eval_expr expr])
+      | (_, inp, out), Assign (var, expr) -> (set_var var (eval_expr expr), inp, out)
       | _, Seq (prog1, prog2) -> eval (eval config prog1) prog2
+      | _, Skip -> config
+      | _, If (cond, positive, negative) -> if (eval_expr cond) != 0
+                                            then eval config positive
+                                            else eval config negative
+      | _, (While (cond, body) as loop) -> if (eval_expr cond) != 0
+                                           then eval config (Seq (body, loop))
+                                           else config (* don't use skip *)
                                    
     (* Statement parser *)
     ostap (	  
-      single: v:IDENT ":=" e:base {Assign (v, e)} | "read" "(" v:IDENT ")" {Read v} | "write" "(" e:base ")" {Write e};
       base: !(Expr.parse);
-      parse: e1:single ";" e2:parse {Seq (e1, e2)} | e:single
+
+      assign: v:IDENT ":=" e:base {Assign (v, e)};
+      read: "read" "(" v:IDENT ")" {Read v};
+      write: "write" "(" e:base ")" {Write e};
+      skip: "skip" {Skip};
+      single: assign | read | write | skip;
+                                      
+      ite: "if" cond:base "then" positive:parse "else" negative:parse "fi" {If (cond, positive, negative)};
+      while_loop: "while" cond:base "do" body:parse "od" {While (cond, body)};
+      seq: cmd1:single ";" cmd2:parse {Seq (cmd1, cmd2)};
+
+      parse: single | ite | while_loop | seq
     )      
   end
 
