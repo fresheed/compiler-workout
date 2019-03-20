@@ -87,6 +87,9 @@ class compiler =
     method get_while_labels =
       let suffix = string_of_int label_count
       in "loop_" ^ suffix, "od_" ^ suffix, self#next_label
+    method get_opt_while_labels =
+      let suffix = string_of_int label_count
+      in "loop_" ^ suffix, "checkwhile_" ^ suffix, self#next_label
     method get_repeatuntil_label =
       let suffix = string_of_int label_count
       in "repeat_" ^ suffix, self#next_label
@@ -96,8 +99,12 @@ let rec compile program =
   let rec expr = function
   | Expr.Var   x          -> [LD x]
   | Expr.Const n          -> [CONST n]
-  | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op]
-  in
+  | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op] in
+  (* it's slow (n^2 for full program) but only at compile time *)
+  let rec replace_label old_label new_label program = match program with
+    | [] -> []
+    | JMP old_label :: rest -> JMP new_label :: replace_label old_label new_label rest
+    | cmd :: rest -> cmd :: replace_label old_label new_label rest in
   let rec compile_impl compiler = function
     | Stmt.Seq (s1, s2)  -> let prog1, compiler' = compile_impl compiler s1 in
                             let prog2, compiler'' = compile_impl compiler' s2 in
@@ -108,16 +115,23 @@ let rec compile program =
     | Stmt.Skip -> [], compiler
     | Stmt.If (cond, positive, negative) ->
        let else_label, fi_label, compiler' = compiler#get_if_labels in
-       let prog_pos, compiler'' = compile_impl compiler' positive in
+       let prog_pos_raw, compiler'' = compile_impl compiler' positive in
+       let prog_pos = let last_cmd::_ = (List.rev prog_pos_raw) in
+                      match last_cmd with
+                      | LABEL old_label -> replace_label old_label fi_label prog_pos_raw
+                      | _ -> prog_pos_raw in
        let prog_neg, compiler''' = compile_impl compiler'' negative in
-       expr cond @ [CJMP ("z", else_label)] @ prog_pos
-       @ [JMP fi_label; LABEL else_label] @ prog_neg
-       @ [LABEL fi_label], compiler'''
+       expr cond @ [CJMP ("z", else_label)]
+       @ prog_pos @ [JMP fi_label; LABEL else_label]
+       @ prog_neg @ [LABEL fi_label], compiler'''
     | Stmt.While (cond, body) -> 
-       let loop_label, od_label, compiler' = compiler#get_while_labels in
+       (* let loop_label, od_label, compiler' = compiler#get_while_labels in *)
+       let loop_label, check_label, compiler' = compiler#get_opt_while_labels in
        let prog_body, compiler'' = compile_impl compiler' body in       
-       [LABEL loop_label] @ expr cond @ [CJMP ("z", od_label)]
-       @ prog_body @ [JMP loop_label; LABEL od_label], compiler''
+       (* [LABEL loop_label] @ expr cond @ [CJMP ("z", od_label)]
+        * @ prog_body @ [JMP loop_label; LABEL od_label], compiler'' *)
+       [JMP check_label; LABEL loop_label] @ prog_body @ [LABEL check_label]
+       @ expr cond @ [CJMP ("nz", loop_label)], compiler''
     | Stmt.RepeatUntil (cond, body) ->
        let loop_label, compiler' = compiler#get_repeatuntil_label in
        let prog_body, compiler'' = compile_impl compiler' body in
