@@ -103,8 +103,11 @@ let rec compile program =
   (* it's slow (n^2 for full program) but only at compile time *)
   let rec replace_label old_label new_label program = match program with
     | [] -> []
-    | JMP old_label :: rest -> JMP new_label :: replace_label old_label new_label rest
+    | LABEL lbl as orig :: rest -> (if lbl = old_label then [] else [orig]) @ replace_label old_label new_label rest
+    | JMP lbl :: rest -> (JMP (if lbl = old_label then new_label else lbl)) :: replace_label old_label new_label rest
+    | CJMP (mode, lbl) :: rest -> (CJMP (mode, (if lbl = old_label then new_label else lbl))) :: replace_label old_label new_label rest
     | cmd :: rest -> cmd :: replace_label old_label new_label rest in
+  
   let rec compile_impl compiler = function
     | Stmt.Seq (s1, s2)  -> let prog1, compiler' = compile_impl compiler s1 in
                             let prog2, compiler'' = compile_impl compiler' s2 in
@@ -116,11 +119,15 @@ let rec compile program =
     | Stmt.If (cond, positive, negative) ->
        let else_label, fi_label, compiler' = compiler#get_if_labels in
        let prog_pos_raw, compiler'' = compile_impl compiler' positive in
-       let prog_pos = let last_cmd::_ = (List.rev prog_pos_raw) in
-                      match last_cmd with
-                      | LABEL old_label -> replace_label old_label fi_label prog_pos_raw
-                      | _ -> prog_pos_raw in
-       let prog_neg, compiler''' = compile_impl compiler'' negative in
+       let prog_pos = match (List.rev prog_pos_raw) with
+         | LABEL old_label :: _ -> replace_label old_label fi_label prog_pos_raw
+         | [] -> []
+         | _ -> prog_pos_raw in
+       let prog_neg_raw, compiler''' = compile_impl compiler'' negative in
+       let prog_neg = match (List.rev prog_neg_raw) with
+         | LABEL old_label :: _ -> replace_label old_label fi_label prog_neg_raw
+         | [] -> []
+         | _ -> prog_neg_raw in
        expr cond @ [CJMP ("z", else_label)]
        @ prog_pos @ [JMP fi_label; LABEL else_label]
        @ prog_neg @ [LABEL fi_label], compiler'''
