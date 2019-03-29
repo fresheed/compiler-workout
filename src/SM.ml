@@ -31,28 +31,40 @@ type config = (prg * State.t) list * int list * Stmt.config
    Takes an environment, a configuration and a program, and returns a configuration as a result. The
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
 *)                         
-let rec eval env (control_stack, stack, (state, inp, out as subconf) as config2) program =
+let rec eval env (cs, ds, (state, inp, out as subconf) as config2) program =
   let eval_expr expr = Language.Expr.eval state expr in
   let eval_cmd config command = match config, command with
     | (_, y::x::rest, _), BINOP (str_op)
       -> let result=Language.Expr.eval state (Language.Expr.Binop (str_op, Language.Expr.Const (x), Language.Expr.Const (y)))
-         in (control_stack, result::rest, subconf)
+         in (cs, result::rest, subconf)
 
-    | (_, _, _), CONST (value) -> (control_stack, value::stack, subconf)
-    | (_, _, (_, value::rest, _)), READ -> (control_stack, value::stack, (state, rest, out))
-    | (_, value::rest, (_, _, _)), WRITE -> (control_stack, rest, (state, inp, out@[value]))
-    | (_, _, _), LD (var) -> (control_stack, (Language.State.eval state var)::stack, subconf)
-    | (_, value::rest, _), ST (var) -> (control_stack, rest, (Language.State.update var value state, inp, out))
+    | (_, _, _), CONST (value) -> (cs, value::ds, subconf)
+    | (_, _, (_, value::rest, _)), READ -> (cs, value::ds, (state, rest, out))
+    | (_, value::rest, (_, _, _)), WRITE -> (cs, rest, (state, inp, out@[value]))
+    | (_, _, _), LD (var) -> (cs, (Language.State.eval state var)::ds, subconf)
+    | (_, value::rest, _), ST (var) -> (cs, rest, (Language.State.update var value state, inp, out))
     | _, LABEL _ -> config
 
   in match program with
      | [] -> config2
      | (JMP label)::_ -> eval env config2 (env#labeled label)
      | (CJMP (mode, label))::next ->
-        let top::rest = stack in
+        let top::rest = ds in
         let goto = (env#labeled label) in
         let target = if ((mode="z") == (top == 0)) then goto else next in
-        eval env (control_stack, rest, subconf) target
+        eval env (cs, rest, subconf) target
+     | (CALL name)::next -> eval env ((next, state)::cs, ds, subconf) (env#labeled name)
+     | (BEGIN (args, locals))::next ->
+        let state_pre = State.push_scope state (args @ locals) in
+        (* args values are on stack *)
+        let restore_seq = List.map (fun arg -> ST arg) args in
+        let config_before = eval env (cs, ds, (state_pre, inp, out)) restore_seq in
+        eval env config_before next
+     | END::_ -> (match cs with
+                 | (prev_prog, prev_state)::rest_cs ->
+                    let state_after = State.drop_scope state prev_state in
+                    eval env (rest_cs, ds, (state_after, inp, out)) prev_prog
+                 | [] -> config2)
      | cmd::rest -> eval env (eval_cmd config2 cmd) rest
 
 
@@ -98,7 +110,7 @@ class compiler =
       in "repeat_" ^ suffix, self#next_label
   end
 
-let rec compile (defs, program) =
+let rec compile (defs, main_program) =
   let rec expr = function
   | Expr.Var   x          -> [LD x]
   | Expr.Const n          -> [CONST n]
@@ -143,4 +155,14 @@ let rec compile (defs, program) =
        let loop_label, compiler' = compiler#get_repeatuntil_label in
        let prog_body, compiler'' = compile_impl compiler' body in
        [LABEL loop_label] @ prog_body @ expr cond @ [CJMP ("z", loop_label)], compiler''
-  in fst (compile_impl (new compiler) program)
+    | Stmt.Call (name, args_exprs) ->
+       (let args_init = List.concat (List.map expr args_exprs) (* args values on stack top *)
+        in args_init @ [CALL name]), compiler
+  in
+  let compile_program program = fst (compile_impl (new compiler) program) in
+  let main_program = compile_program main_program in
+  let compile_procedure (name, (args, locals, body)) =
+    let body_program  = compile_program body in
+    [LABEL name; BEGIN (args, locals)] @ body_program @ [END] in
+  let procedures = List.concat (List.map compile_procedure defs) in
+  main_program @ [END] @ procedures
