@@ -34,10 +34,10 @@ module State =
     let eval s x = (if List.mem x s.scope then s.l else s.g) x
 
     (* Creates a new scope, based on a given state *)
-    let push_scope st xs = {empty with g = st.g; scope = xs}
+    let push_scope st xs = {empty with g = st.g; scope = xs} (* enter *)
 
     (* Drops a scope *)
-    let drop_scope st st' = {st' with g = st.g}
+    let drop_scope st st' = {st' with g = st.g} (* leave *)
 
   end
     
@@ -158,25 +158,35 @@ module Stmt =
     let rec eval env (state, input, output as config) program =
       let eval_expr expr = Expr.eval state expr in
       let set_var var value = State.update var value state in
-      match config, program with
-      | (_, value::inp_rest, out), Read (var) -> (set_var var value, inp_rest, out)
-      | (state, inp, out), Write (expr) -> (state, inp, out@[eval_expr expr])
-      | (_, inp, out), Assign (var, expr) -> (set_var var (eval_expr expr), inp, out)
-      | _, Seq (prog1, prog2) -> eval env (eval env config prog1) prog2
-      | _, Skip -> config
-      | _, If (cond, positive, negative) -> if (eval_expr cond) != 0
-                                            then eval env config positive
-                                            else eval env config negative
-      | _, (While (cond, body) as loop) -> if (eval_expr cond) != 0
-                                           then eval env config (Seq (body, loop))
-                                           else config
-      | _, (Repeat (body, cond) as loop) ->
+      match program with
+      | Read (var) ->
+         (match input with
+          | value::inp_rest -> (set_var var value, inp_rest, output)
+          | _ -> failwith "Input stream is empty")
+      | Write (expr) -> (state, input, output@[eval_expr expr])
+      | Assign (var, expr) -> (set_var var (eval_expr expr), input, output)
+      | Seq (prog1, prog2) -> eval env (eval env config prog1) prog2
+      | Skip -> config
+      | If (cond, positive, negative) -> if (eval_expr cond) != 0
+                                         then eval env config positive
+                                         else eval env config negative
+      | (While (cond, body) as loop) -> if (eval_expr cond) != 0
+                                        then eval env config (Seq (body, loop))
+                                        else config
+      | (Repeat (body, cond) as loop) ->
          let (state', input', output' as config') = eval env config body in
          if (Expr.eval state' cond) == 0
          then eval env config' loop
          else config'
-
-
+      | Call (name, args_exprs) ->
+         let args_values = List.map eval_expr args_exprs in
+         let (args, locals, body) = env#definition name in
+         let state_pre = State.push_scope state (args @ locals) in
+         let set_var st var value = State.update var value st in
+         let state_before = List.fold_left2 set_var state_pre args args_values in
+         let (state', input', output') = eval env (state_before, input, output) body in
+         let state_after = State.drop_scope state' state in
+         (state_after, input', output')
                        
     (* Statement parser *)
     let rec build_ite_tree (cond, positive as if_branch) elif_branches else_branch_opt =
