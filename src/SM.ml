@@ -31,7 +31,30 @@ type config = (prg * State.t) list * int list * Stmt.config
    Takes an environment, a configuration and a program, and returns a configuration as a result. The
    environment is used to locate a label to jump to (via method env#labeled <label_name>)
 *)                         
-let rec eval _ = failwith "Not Implemented Yet"
+let rec eval env (control_stack, stack, (state, inp, out as subconf) as config2) program =
+  let eval_expr expr = Language.Expr.eval state expr in
+  let eval_cmd config command = match config, command with
+    | (_, y::x::rest, _), BINOP (str_op)
+      -> let result=Language.Expr.eval state (Language.Expr.Binop (str_op, Language.Expr.Const (x), Language.Expr.Const (y)))
+         in (control_stack, result::rest, subconf)
+
+    | (_, _, _), CONST (value) -> (control_stack, value::stack, subconf)
+    | (_, _, (_, value::rest, _)), READ -> (control_stack, value::stack, (state, rest, out))
+    | (_, value::rest, (_, _, _)), WRITE -> (control_stack, rest, (state, inp, out@[value]))
+    | (_, _, _), LD (var) -> (control_stack, (Language.State.eval state var)::stack, subconf)
+    | (_, value::rest, _), ST (var) -> (control_stack, rest, (Language.State.update var value state, inp, out))
+    | _, LABEL _ -> config
+
+  in match program with
+     | [] -> config2
+     | (JMP label)::_ -> eval env config2 (env#labeled label)
+     | (CJMP (mode, label))::next ->
+        let top::rest = stack in
+        let goto = (env#labeled label) in
+        let target = if ((mode="z") == (top == 0)) then goto else next in
+        eval env (control_stack, rest, subconf) target
+     | cmd::rest -> eval env (eval_cmd config2 cmd) rest
+
 
 (* Top-level evaluation
 
@@ -56,4 +79,68 @@ let run p i =
    Takes a program in the source language and returns an equivalent program for the
    stack machine
 *)
-let compile _ = failwith "Not Implemented Yet"
+class compiler =
+  object (self)
+    val label_count = 0
+
+    method next_label = {< label_count = label_count+1 >}
+    method get_if_labels =
+      let suffix = string_of_int label_count
+      in "else_" ^ suffix, "fi_" ^ suffix, self#next_label
+    method get_while_labels =
+      let suffix = string_of_int label_count
+      in "loop_" ^ suffix, "od_" ^ suffix, self#next_label
+    method get_opt_while_labels =
+      let suffix = string_of_int label_count
+      in "loop_" ^ suffix, "checkwhile_" ^ suffix, self#next_label
+    method get_repeatuntil_label =
+      let suffix = string_of_int label_count
+      in "repeat_" ^ suffix, self#next_label
+  end
+
+let rec compile (defs, program) =
+  let rec expr = function
+  | Expr.Var   x          -> [LD x]
+  | Expr.Const n          -> [CONST n]
+  | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op] in
+  (* it's slow (n^2 for full program) but only at compile time *)
+  let rec replace_label old_label new_label program = match program with
+    | [] -> []
+    | LABEL lbl as orig :: rest -> (if lbl = old_label then [] else [orig]) @ replace_label old_label new_label rest
+    | JMP lbl :: rest -> (JMP (if lbl = old_label then new_label else lbl)) :: replace_label old_label new_label rest
+    | CJMP (mode, lbl) :: rest -> (CJMP (mode, (if lbl = old_label then new_label else lbl))) :: replace_label old_label new_label rest
+    | cmd :: rest -> cmd :: replace_label old_label new_label rest in
+
+  let rec compile_impl compiler = function
+    | Stmt.Seq (s1, s2)  -> let prog1, compiler' = compile_impl compiler s1 in
+                            let prog2, compiler'' = compile_impl compiler' s2 in
+                            prog1 @ prog2, compiler''
+    | Stmt.Read x        -> [READ; ST x], compiler
+    | Stmt.Write e       -> expr e @ [WRITE], compiler
+    | Stmt.Assign (x, e) -> expr e @ [ST x], compiler
+    | Stmt.Skip -> [], compiler
+    | Stmt.If (cond, positive, negative) ->
+       let else_label, fi_label, compiler' = compiler#get_if_labels in
+       let prog_pos_raw, compiler'' = compile_impl compiler' positive in
+       let prog_pos = match (List.rev prog_pos_raw) with
+         | LABEL old_label :: _ -> replace_label old_label fi_label prog_pos_raw
+         | [] -> []
+         | _ -> prog_pos_raw in
+       let prog_neg_raw, compiler''' = compile_impl compiler'' negative in
+       let prog_neg = match (List.rev prog_neg_raw) with
+         | LABEL old_label :: _ -> replace_label old_label fi_label prog_neg_raw
+         | [] -> []
+         | _ -> prog_neg_raw in
+       expr cond @ [CJMP ("z", else_label)]
+       @ prog_pos @ [JMP fi_label; LABEL else_label]
+       @ prog_neg @ [LABEL fi_label], compiler'''
+    | Stmt.While (cond, body) -> 
+       let loop_label, check_label, compiler' = compiler#get_opt_while_labels in
+       let prog_body, compiler'' = compile_impl compiler' body in       
+       [JMP check_label; LABEL loop_label] @ prog_body @ [LABEL check_label]
+       @ expr cond @ [CJMP ("nz", loop_label)], compiler''
+    | Stmt.Repeat (body, cond) ->
+       let loop_label, compiler' = compiler#get_repeatuntil_label in
+       let prog_body, compiler'' = compile_impl compiler' body in
+       [LABEL loop_label] @ prog_body @ expr cond @ [CJMP ("z", loop_label)], compiler''
+  in fst (compile_impl (new compiler) program)

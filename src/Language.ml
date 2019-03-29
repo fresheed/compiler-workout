@@ -5,6 +5,11 @@ open GT
 
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap.Combinators
+open Ostap
+
+let to_list = function
+  | None -> []
+  | Some results -> results
 
 (* States *)
 module State =
@@ -150,13 +155,61 @@ module Stmt =
 
        which returns a list of formal parameters and a body for given definition
     *)
-    let rec eval _ = failwith "Not Implemented Yet"
-                                
+    let rec eval env (state, input, output as config) program =
+      let eval_expr expr = Expr.eval state expr in
+      let set_var var value = State.update var value state in
+      match config, program with
+      | (_, value::inp_rest, out), Read (var) -> (set_var var value, inp_rest, out)
+      | (state, inp, out), Write (expr) -> (state, inp, out@[eval_expr expr])
+      | (_, inp, out), Assign (var, expr) -> (set_var var (eval_expr expr), inp, out)
+      | _, Seq (prog1, prog2) -> eval env (eval env config prog1) prog2
+      | _, Skip -> config
+      | _, If (cond, positive, negative) -> if (eval_expr cond) != 0
+                                            then eval env config positive
+                                            else eval env config negative
+      | _, (While (cond, body) as loop) -> if (eval_expr cond) != 0
+                                           then eval env config (Seq (body, loop))
+                                           else config
+      | _, (Repeat (body, cond) as loop) ->
+         let (state', input', output' as config') = eval env config body in
+         if (Expr.eval state' cond) == 0
+         then eval env config' loop
+         else config'
+
+
+                       
     (* Statement parser *)
-    ostap (                                      
-      parse: empty {failwith "Not yet implemented"}
-    )
-      
+    let rec build_ite_tree (cond, positive as if_branch) elif_branches else_branch_opt =
+      match elif_branches, else_branch_opt with
+      | elif::rest, _ ->
+         let subtree = build_ite_tree elif rest else_branch_opt in
+         If (cond, positive, subtree)
+      | [], None -> If (cond, positive, Skip)
+      | [], Some else_cmd -> If (cond, positive, else_cmd)
+
+    ostap (	  
+      base: !(Expr.parse);
+
+      assign: v:IDENT ":=" e:base {Assign (v, e)};
+      read: "read" "(" v:IDENT ")" {Read v};
+      write: "write" "(" e:base ")" {Write e};
+      skip: "skip" {Skip};
+      args_list: arg:base "," rest:args_list {arg::rest} | arg:base {[arg]};
+      call: name:IDENT "(" args:(args_list?) ")" {Call (name, to_list args)};
+      single: assign | read | write | skip | call;
+
+      if_then_branch: "if" cond:base "then" positive:parse {(cond, positive)};
+      elif_branch: "elif" cond:base "then" positive:parse {(cond, positive)};
+      else_branch: "else" negative:parse {negative};
+      ite: itb:if_then_branch elifbs:(elif_branch*) ebopt:(else_branch?) "fi" {build_ite_tree itb elifbs ebopt};
+      while_loop: "while" cond:base "do" body:parse "od" {While (cond, body)};
+      repeat_loop: "repeat" body:parse "until" cond:base {Repeat (body, cond)};
+      for_loop: "for" init:parse "," cond:base "," update:parse "do" body:parse "od" {Seq (init, While (cond, Seq (body, update)))};
+      grouped: ite | while_loop | repeat_loop | for_loop;
+      seq: cmd1:(single | grouped)  ";" cmd2:parse {Seq (cmd1, cmd2)};
+
+      parse: seq | grouped | single
+    )      
   end
 
 (* Function and procedure definitions *)
@@ -167,7 +220,9 @@ module Definition =
     type t = string * (string list * string list * Stmt.t)
 
     ostap (                                      
-      parse: empty {failwith "Not yet implemented"}
+      args_list: arg:IDENT "," rest:args_list {arg::rest} | arg:IDENT {[arg]};
+      def: "fun" name:IDENT "(" args:args_list? ")" locals:(-"local" lst:args_list)? "{" body:!(Stmt.parse) "}" {name, (to_list args, to_list locals, body)};
+      parse: def
     )
 
   end
