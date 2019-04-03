@@ -113,7 +113,10 @@ let rec compile (defs, main_program) =
   let rec expr = function
   | Expr.Var   x          -> [LD x]
   | Expr.Const n          -> [CONST n]
-  | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op] in
+  | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op] 
+  | Expr.Call (name, args_exprs) ->
+     let args_init = List.concat (List.rev (List.map expr args_exprs))
+     in args_init @ [CALL (name, 0, false)] in     
   (* it's slow (n^2 for full program) but only at compile time *)
   let rec replace_label old_label new_label program = match program with
     | [] -> []
@@ -155,8 +158,11 @@ let rec compile (defs, main_program) =
        let prog_body, compiler'' = compile_impl compiler' body in
        [LABEL loop_label] @ prog_body @ expr cond @ [CJMP ("z", loop_label)], compiler''
     | Stmt.Call (name, args_exprs) ->
-       (let args_init = List.concat (List.map expr args_exprs) (* args values on stack top *)
-        in args_init @ [CALL (name, 0, false)]), compiler      (* should modify it *)
+       (let args_init = List.concat (List.rev (List.map expr args_exprs)) (* args values on stack top *)
+        in args_init @ [CALL (name, 0, false)]), compiler      
+    | Stmt.Return opt_value -> (match opt_value with
+                               | Some exp -> expr exp @ [END]
+                               | None -> [END]), compiler
   in
   let compile_program program = fst (compile_impl (new compiler) program) in
   let main_program = compile_program main_program in
