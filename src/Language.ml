@@ -108,6 +108,14 @@ module Expr =
          let (st'', i'', o'', Some a2) = eval env after_first y in
          let result = to_func op a1 a2 in
          (st'', i'', o'', Some result)
+      | Call (func, args_exprs) ->
+         let eval_arg (conf, results) expr =
+           let (_, _, _, Some res as conf') = eval env conf expr
+           in (conf', results@[res]) in
+         let (config', args_values) =
+           List.fold_left eval_arg (conf, []) args_exprs in
+         env#definition env func args_values config' (* same as in stmt ? *)
+
              
     (* Expression parser. You can use the following terminals:
 
@@ -131,10 +139,13 @@ module Expr =
 	     )
 	     primary);
       
-      primary:
-        n:DECIMAL {Const n}
-      | x:IDENT   {Var x}
-      | -"(" parse -")"
+      args_list: arg:parse "," rest:args_list {arg::rest} | arg:parse {[arg]};
+      funcall: fnc:IDENT "(" args:args_list ")" {Call (fnc, args)};
+      
+      primary: -"(" parse -")"
+        | funcall
+        | n:DECIMAL {Const n}
+        | x:IDENT   {Var x}
     )    
   end
                     
@@ -166,20 +177,25 @@ module Stmt =
     let rec eval env (state, input, output, res as config) kontinue program =
       let eval_expr_now expr = Expr.eval env config expr in
       let set_var var value = State.update var value state in
+      let prepend_kontinue stmt kont = match kont with
+        | Skip -> stmt
+        | _ -> Seq (stmt, kont) in
       match program with
+      | Skip -> (match kontinue with
+                | Skip -> config
+                | _ -> eval env config Skip kontinue)
       | Read (var) ->
-         (match input with
-          | value::inp_rest -> (set_var var value, inp_rest, output, None)
-          | _ -> failwith "Input stream is empty")
+         let value::inp_rest = input in
+         eval env (set_var var value, inp_rest, output, None) Skip kontinue
       | Write (expr) ->
          let (state', inp', out', Some res) = eval_expr_now expr in
-         (state', inp', out'@[res], None)
+         eval env (state', inp', out'@[res], None) Skip kontinue
       | Assign (var, expr) -> 
          let (state', inp', out', Some res) = eval_expr_now expr in
-         (State.update var res state', inp', out', None)
+         eval env (State.update var res state', inp', out', None) Skip kontinue
       | Seq (prog1, prog2) ->         
-         eval env (eval env config kontinue prog1) kontinue prog2
-      | Skip -> config
+         (* eval env (eval env config kontinue prog1) kontinue prog2 *)
+         eval env config (prepend_kontinue prog2 kontinue) prog1
       | If (cond, positive, negative) ->
          let (_, _, _, Some res as after_cond_eval) = eval_expr_now cond in
          if (res!=0)
@@ -188,21 +204,26 @@ module Stmt =
       | (While (cond, body) as loop) ->
          let (_, _, _, Some res as after_cond_eval) = eval_expr_now cond in
          if (res!=0)
-         then eval env after_cond_eval kontinue (Seq (body, loop))
-         else after_cond_eval
+         then eval env after_cond_eval (prepend_kontinue loop kontinue) body
+         else eval env after_cond_eval Skip kontinue
       | (Repeat (body, cond) as loop) ->
-         let config' = eval env config kontinue body in
+         let config' = eval env config Skip body in
          let (_, _, _, Some res as after_cond_eval) = Expr.eval env config' cond in
          if res == 0
-         then eval env after_cond_eval kontinue loop
-         else after_cond_eval
+         then (* then eval env after_cond_eval kontinue loop *)
+           eval env after_cond_eval (prepend_kontinue loop kontinue) Skip (* right? *)
+         else eval env after_cond_eval Skip kontinue
       | Call (name, args_exprs) ->
          let eval_arg (conf, results) expr =
            let (_, _, _, Some res as conf') = Expr.eval env conf expr
            in (conf', results@[res]) in
          let (config', args_values) =
            List.fold_left eval_arg (config, []) args_exprs in
-         env#definition env name args_values config'
+         let after_call = env#definition env name args_values config' in
+         eval env after_call Skip kontinue
+      | Return opt -> match opt with
+                      | Some expr -> eval_expr_now expr
+                      | None -> config
                        
     (* Statement parser *)
     let rec build_ite_tree (cond, positive as if_branch) elif_branches else_branch_opt =
@@ -222,7 +243,8 @@ module Stmt =
       skip: "skip" {Skip};
       args_list: arg:base "," rest:args_list {arg::rest} | arg:base {[arg]};
       call: name:IDENT "(" args:(args_list?) ")" {Call (name, to_list args)};
-      single: assign | read | write | skip | call;
+      return: "return" opt_expr:(base?) {Return opt_expr};
+      single: assign | read | write | skip | call | return;
 
       if_then_branch: "if" cond:base "then" positive:parse {(cond, positive)};
       elif_branch: "elif" cond:base "then" positive:parse {(cond, positive)};

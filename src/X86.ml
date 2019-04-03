@@ -96,9 +96,7 @@ let compile env code = failwith "Not implemented"
 module S = Set.Make (String)
 
 (* Environment implementation *)
-(* Had problems with installing GT on ocaml 4.06, and this feature requires new ocaml *)
-let rec buildList i n = let x = i+1 in if i <= n then i::(buildList x n) else []
-let make_assoc l = List.combine l (buildList 0 ((List.length l) - 1))
+let make_assoc l = List.combine l (List.init (List.length l) (fun x -> x))
                      
 class env =
   object (self)
