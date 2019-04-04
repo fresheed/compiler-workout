@@ -199,8 +199,10 @@ let rec compile env program = match program with
 module S = Set.Make (String)
 
 (* Environment implementation *)
-let make_assoc l = List.combine l (List.init (List.length l) (fun x -> x))
-                     
+(* Had problems with installing GT on ocaml 4.06, and this feature requires new ocaml *)
+let rec buildList i n = let x = i+1 in if i <= n then i::(buildList x n) else []
+let make_assoc l = List.combine l (buildList 0 ((List.length l) - 1))
+
 class env =
   object (self)
     val globals     = S.empty (* a set of global variables         *)
