@@ -257,7 +257,6 @@ module Stmt =
       seq: cmd1:(single | grouped)  ";" cmd2:parse {Seq (cmd1, cmd2)};
 
       parse: seq | grouped | single
-                                     (* todo new stmts *)
     )      
   end
 

@@ -14,7 +14,7 @@ open Language
 (* conditional jump                *) | CJMP  of string * string
 (* begins procedure definition     *) | BEGIN of string * string list * string list
 (* end procedure definition        *) | END
-(* calls a function/procedure      *) | CALL  of string * int * bool
+(* calls a function/procedure      *) | CALL  of string * int * bool 
 (* returns from a function         *) | RET   of bool with show
                                                    
 (* The type for the stack machine program *)                                                               
@@ -60,6 +60,7 @@ let rec eval env (cs, ds, (state, inp, out, foo as subconf) as config2) program 
         let restore_seq = List.map (fun arg -> ST arg) args in
         let config_before = eval env (cs, ds, (state_pre, inp, out, foo)) restore_seq in
         eval env config_before next
+     | RET _::_
      | END::_ -> (match cs with
                  | (prev_prog, prev_state)::rest_cs ->
                     let state_after = State.leave state prev_state in
@@ -114,9 +115,9 @@ let rec compile (defs, main_program) =
   | Expr.Var   x          -> [LD x]
   | Expr.Const n          -> [CONST n]
   | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op] 
-  | Expr.Call (name, args_exprs) ->
+  | Expr.Call (name, args_exprs) -> (* has return value *)
      let args_init = List.concat (List.rev (List.map expr args_exprs))
-     in args_init @ [CALL (name, 0, false)] in     
+     in args_init @ [CALL (name, List.length args_exprs, true)] in     
   (* it's slow (n^2 for full program) but only at compile time *)
   let rec replace_label old_label new_label program = match program with
     | [] -> []
@@ -159,15 +160,15 @@ let rec compile (defs, main_program) =
        [LABEL loop_label] @ prog_body @ expr cond @ [CJMP ("z", loop_label)], compiler''
     | Stmt.Call (name, args_exprs) ->
        (let args_init = List.concat (List.rev (List.map expr args_exprs)) (* args values on stack top *)
-        in args_init @ [CALL (name, 0, false)]), compiler      
+        in args_init @ [CALL (name, List.length args_exprs, false)]), compiler (* no return value *)
     | Stmt.Return opt_value -> (match opt_value with
-                               | Some exp -> expr exp @ [END]
-                               | None -> [END]), compiler
+                               | Some exp -> expr exp @ [RET true]
+                               | None -> [RET false]), compiler
   in
   let compile_program program = fst (compile_impl (new compiler) program) in
   let main_program = compile_program main_program in
   let compile_procedure (name, (args, locals, body)) =
     let body_program  = compile_program body in
-    [LABEL name; BEGIN ("", args, locals)] @ body_program @ [END] in
+    [LABEL name; BEGIN (name, args, locals)] @ body_program @ [END] in
   let procedures = List.concat (List.map compile_procedure defs) in
   main_program @ [END] @ procedures
