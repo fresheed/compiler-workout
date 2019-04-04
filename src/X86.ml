@@ -164,8 +164,7 @@ let compile_instr env instr =
      | END ->
         (* runs after main program, so no need to restore env by 'leave' *)
         let epilogue = [Mov (ebp, esp); Pop ebp] in
-        let constval = env#lsize in
-        let const_setup = (Printf.sprintf "\t.set %s, %d" constval (env#allocated * word_size)) in
+        let const_setup = (Printf.sprintf "\t.set %s, %d" env#lsize (env#allocated * word_size)) in
         env, [Label env#epilogue] @ epilogue @ [Ret; Meta const_setup]
      | CALL (name, args_amount, returns_value) ->
         let save_registers, restore_registers =
@@ -177,10 +176,10 @@ let compile_instr env instr =
           let rec place_args env' rem_amount pushes = match rem_amount with
             | 0 -> env', 0, pushes
             | _ -> let pop_from, env'' = env'#pop in
-                   place_args env' (rem_amount-1) ((Push pop_from)::pushes)
+                   place_args env'' (rem_amount-1) ((Push pop_from)::pushes)
           in place_args env args_amount [] in
         (* call *)
-        let restore_stack = [Binop ("+", L (word_size * args_amount), esp)] in
+        let restore_stack = [Binop ("+", L (args_amount * word_size), esp)] in
         let env, hardware2symbolic =
           if returns_value
           then let push_to, env' = env#allocate in env', [Mov (eax, push_to)]
