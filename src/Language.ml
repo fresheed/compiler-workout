@@ -203,13 +203,20 @@ module Expr =
 	     )
 	     primary);
       
-      args_list: arg:parse "," rest:args_list {arg::rest} | arg:parse {[arg]};
-      funcall: fnc:IDENT "(" args:args_list ")" {Call (fnc, args)};
-      
-      primary: -"(" parse -")"
-        | funcall
+      (* args_list: arg:parse "," rest:args_list {arg::rest} | arg:parse {[arg]}; *)
+      args_list: "(" ")" {[]} | -"(" !(Util.list)[parse] -")";
+      funcall: fnc:IDENT args:args_list {Call (fnc, args)};
+
+      single: funcall
         | n:DECIMAL {Const n}
         | x:IDENT   {Var x}
+        | s:STRING {String (String.sub s 1 ((String.length s)-2))};
+      
+      primary: -"(" parse -")"
+        (* | arr:parse ".length" {Length arr}
+         * | arr:parse "[" index:parse "]" {Elem (arr, index)}
+         * | "[" elements:!(Util.list)[ostap (parse)] "]" {Array elements} *)
+        | single
     )    
   end
                     
