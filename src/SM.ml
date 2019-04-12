@@ -45,11 +45,21 @@ let rec eval env (cs, (ds:Value.t list), (state, inp, out, (foo: Value.t option)
       -> let result=Value.of_int (Expr.to_func str_op (Value.to_int x) (Value.to_int y))
          in (cs, result::rest, subconf)
 
-    | _, CONST (value) -> (cs, (Value.of_int value)::ds, subconf)
+    | _, CONST value -> (cs, (Value.of_int value)::ds, subconf)
+    | _, STRING str -> (cs, (Value.of_string str)::ds, subconf)
     (* | (_, _, (_, value::rest, _, _)), READ -> (cs, value::ds, (state, rest, out, foo))
      * | (_, value::rest, (_, _, _, _)), WRITE -> (cs, rest, (state, inp, out@[value], foo)) *)
     | _, LD (var) -> (cs, (State.eval state var)::ds, subconf)
     | (_, value::rest, _), ST (var) -> (cs, rest, (State.update var value state, inp, out, foo))
+    | (_, _, _), STA (var, inds_amount) -> (* ia stack tops are indices, next is value *)
+       let rec split n array = match n with  
+         | 0 -> ([], array)
+         | _ -> let head::rest = array in
+                let sub_before, sub_after = split (n-1) rest in
+                head::sub_before, sub_after in
+       let (indices, value::ds') = split inds_amount ds in
+       let state' = Stmt.update state var value indices in
+       (cs, ds', (state', inp, out, foo))
     | _, LABEL _ -> config
 
   in match program with
@@ -58,9 +68,14 @@ let rec eval env (cs, (ds:Value.t list), (state, inp, out, (foo: Value.t option)
      | (CJMP (mode, label))::next ->
         let top::rest = ds in
         let goto = (env#labeled label) in
-        let target = if ((mode="z") == (Value.to_int top == 0)) then goto else next in
+        let target = if ((mode="z") == (Value.to_int top = 0)) then goto else next in
         eval env (cs, rest, subconf) target
-     | (CALL (name, _, _))::next -> eval env ((next, state)::cs, ds, subconf) (env#labeled name)
+     | (CALL (name, args_amount, should_return))::next ->
+        (try
+          eval env ((next, state)::cs, ds, subconf) (env#labeled name)
+        with Not_found ->
+              (let after_builtin = env#builtin config2 name args_amount (should_return) in
+              eval env after_builtin next))
      | (BEGIN (_, args, locals))::next ->
         let state_pre = State.enter state (args @ locals) in
         (* args values are on stack *)
@@ -94,13 +109,15 @@ let run p i =
       (object
          method is_label l = M.mem l m
          method labeled l = M.find l m
-         method builtin (cstack, stack, (st, i, o)) f n p =
+         method builtin (cstack, stack, (st, i, o, _)) f n p =
            let f = match f.[0] with 'L' -> String.sub f 1 (String.length f - 1) | _ -> f in
            let args, stack' = split n stack in
-           let (st, i, o, r) = Builtin.eval (st, i, o, None) (List.rev args) f in
-           let stack'' = if p then stack' else let Some r = r in r::stack' in
+           (* MODIFIED: arguments are already reversed *)
+           let (st, i, o, r) = Builtin.eval (st, i, o, None) (args) f in
+           (* MOFIDIED: true means should return *)
+           let stack'' = if p then let Some r = r in r::stack' else stack' in
            Printf.printf "Builtin: %s\n";
-           (cstack, stack'', (st, i, o))
+           (cstack, stack'', (st, i, o, None))
        end
       )
       ([], [], (State.empty, i, [], None))
@@ -134,14 +151,22 @@ class compiler =
       in "repeat_" ^ suffix, self#next_label
   end
 
-let rec compile (defs, main_program) =
+let rec compile (defs, main) =
   let rec expr = function
   | Expr.Var   x          -> [LD x]
   | Expr.Const n          -> [CONST n]
+  | Expr.String s -> [STRING s]
   | Expr.Binop (op, x, y) -> expr x @ expr y @ [BINOP op] 
   | Expr.Call (name, args_exprs) -> (* has return value *)
      let args_init = List.concat (List.rev (List.map expr args_exprs))
-     in args_init @ [CALL (name, List.length args_exprs, true)] in     
+     in args_init @ [CALL (name, List.length args_exprs, true)]
+  | Expr.Array args_exprs ->  List.concat (List.rev (List.map expr args_exprs)) @
+                               (* now arguments are pushed in correct order *)
+                               [CALL ("$array", (List.length args_exprs), true)]
+  | Expr.Elem (arr, index) -> expr index @ expr arr @ [CALL ("$elem", 2, true)]
+  | Expr.Length (arr) -> expr arr @ [CALL ("$length", 1, true)]
+  in
+
   (* it's slow (n^2 for full program) but only at compile time *)
   let rec replace_label old_label new_label program = match program with
     | [] -> []
@@ -156,7 +181,12 @@ let rec compile (defs, main_program) =
                             prog1 @ prog2, compiler''
     (* | Stmt.Read x        -> [READ; ST x], compiler
      * | Stmt.Write e       -> expr e @ [WRITE], compiler *)
-    | Stmt.Assign (x, _, e) -> expr e @ [ST x], compiler
+    | Stmt.Assign (x, indices, e) ->
+       (match indices with
+       | [] -> expr e @ [ST x], compiler
+       | _ -> expr e @ List.concat (List.rev (List.map expr indices))
+              @ [STA (x, (List.length indices))], compiler
+       )
     | Stmt.Skip -> [], compiler
     | Stmt.If (cond, positive, negative) ->
        let else_label, fi_label, compiler' = compiler#get_if_labels in
@@ -189,10 +219,11 @@ let rec compile (defs, main_program) =
                                | Some exp -> expr exp @ [RET true]
                                | None -> [RET false]), compiler
   in
-  let compile_program program = fst (compile_impl (new compiler) program) in
-  let main_program = compile_program main_program in
-  let compile_procedure (name, (args, locals, body)) =
-    let body_program  = compile_program body in
-    [LABEL name; BEGIN (name, args, locals)] @ body_program @ [END] in
-  let procedures = List.concat (List.map compile_procedure defs) in
+  let main_program, compiler = compile_impl (new compiler) main in
+  let compile_procedure (collected, comp) (name, (args, locals, body)) =
+    let proc_body, comp  = compile_impl comp body in
+    let proc = [LABEL name; BEGIN (name, args, locals)] @ proc_body @ [END] in
+    (collected @ proc, comp) in
+  (* let procedures = List.concat (List.map compile_procedure defs) in *)
+  let procedures, _ = List.fold_left compile_procedure ([], compiler) defs in
   main_program @ [END] @ procedures
