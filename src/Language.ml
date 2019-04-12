@@ -240,7 +240,9 @@ module Expr =
 
       index: -"[" ix:parse -"]" {ix};
       indices_seq: inds:(index*) {inds};
-      indexed: arr:main inds:indices_seq {build_index_sequence arr inds};
+      indexed: arr:main inds:indices_seq {match inds with
+                                          | [] -> arr
+                                          | _ -> build_index_sequence arr inds};
       primary:
         arr:indexed ".length" {Length arr}
         | indexed
