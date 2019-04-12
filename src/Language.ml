@@ -238,14 +238,14 @@ module Expr =
         | s:STRING {String (String.sub s 1 ((String.length s)-2))}
         | c:CHAR {Const (Char.code c)};
 
-      index: -"[" ix:parse -"]" {ix};
-      indices_seq: inds:(index*) {inds};
+          (* index:  {ix}; *)
+      indices_seq: inds:((-"[" parse -"]")*) {inds};
       indexed: arr:main inds:indices_seq {match inds with
                                           | [] -> arr
                                           | _ -> build_index_sequence arr inds};
       primary:
-        arr:indexed ".length" {Length arr}
-        | indexed
+        arr:indexed l:".length"? {match l with | Some _ -> Length arr | None -> arr}
+        (* | indexed *)
     )    
   end
                     
