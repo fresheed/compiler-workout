@@ -8,6 +8,7 @@ open Ostap.Combinators
 open Ostap
 open Combinators
 
+
 (* Values *)
 module Value =
   struct
@@ -83,7 +84,8 @@ module Builtin =
                                      | Value.Array  a -> List.nth a i
                                )
                     )         
-    | "$length"  -> (st, i, o, Some (Value.of_int (match List.hd args with Value.Array a -> List.length a | Value.String s -> String.length s)))
+    | "$length"  ->
+       (st, i, o, Some (Value.of_int (match List.hd args with Value.Array a -> List.length a | Value.String s -> String.length s)))
     | "$array"   -> (st, i, o, Some (Value.of_array args))
     | "isArray"  -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0))
     | "isString" -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0))                     
@@ -137,7 +139,7 @@ module Expr =
       | "!=" -> bti |> (<>)
       | "&&" -> fun x y -> bti (itb x && itb y)
       | "!!" -> fun x y -> bti (itb x || itb y)
-      | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)    
+      | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)
     
     (* Expression evaluator
 
@@ -169,6 +171,17 @@ module Expr =
          let (config', args_values) =
            List.fold_left eval_arg (conf, []) args_exprs in
          env#definition env func args_values config'
+      (* | Array values -> set_result (Value.of_array values) *)
+      | String str -> set_result (Value.of_string str)
+      | Array exprs ->
+         let (st', i', o', values) = eval_list env conf exprs in
+         env#definition env "$array" values (st', i', o', None)
+      | Elem (seq_expr, index_expr) -> 
+         let (st', i', o', args) = eval_list env conf [seq_expr; index_expr]
+         in env#definition env "$elem" args (st', i', o', None)
+      | Length expr ->
+         let (st', i', o', Some value) = eval env conf expr
+         in env#definition env "$length" [value] (st', i', o', None)
     and eval_list env conf xs =
       let vs, (st, i, o, _) =
         List.fold_left
@@ -185,8 +198,16 @@ module Expr =
 
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
          DECIMAL --- a decimal constant [0-9]+ as a string
-    *)
-    ostap (                                      
+     *)
+
+    let e2s = GT.transform(t) (new @t[show]) ()
+    let el2sl exprs = String.concat "," (List.map e2s exprs)
+
+    let rec build_index_sequence expr indices = match indices with
+      | [] -> expr
+      | index::rest -> build_index_sequence (Elem (expr, index)) rest
+
+     ostap (                                      
       parse:
 	  !(Ostap.Util.expr 
              (fun x -> x)
@@ -204,19 +225,24 @@ module Expr =
 	     primary);
       
       (* args_list: arg:parse "," rest:args_list {arg::rest} | arg:parse {[arg]}; *)
-      args_list: "(" ")" {[]} | -"(" !(Util.list)[parse] -")";
+      args_list: -"(" !(Util.list0)[parse] -")";
       funcall: fnc:IDENT args:args_list {Call (fnc, args)};
 
-      single: funcall
+      main: (* no left recursion *)
+        -"(" parse -")"
+        | funcall
         | n:DECIMAL {Const n}
         | x:IDENT   {Var x}
-        | s:STRING {String (String.sub s 1 ((String.length s)-2))};
-      
-      primary: -"(" parse -")"
-        (* | arr:parse ".length" {Length arr}
-         * | arr:parse "[" index:parse "]" {Elem (arr, index)}
-         * | "[" elements:!(Util.list)[ostap (parse)] "]" {Array elements} *)
-        | single
+        | "[" elements:!(Util.list0)[parse] "]" {Array elements}
+        | s:STRING {String (String.sub s 1 ((String.length s)-2))}
+        | c:CHAR {Const (Char.code c)};
+
+      index: -"[" ix:parse -"]" {ix};
+      indices_seq: inds:(index*) {inds};
+      indexed: arr:main inds:indices_seq {build_index_sequence arr inds};
+      primary:
+        arr:indexed ".length" {Length arr}
+        | indexed
     )    
   end
                     
@@ -271,9 +297,12 @@ module Stmt =
        * | Write (expr) ->
        *    let (state', inp', out', Some res) = eval_expr_now expr in
        *    eval env (state', inp', out'@[to_int res], None) Skip kontinue *)
-      | Assign (var, _, expr) -> 
-         let (state', inp', out', Some res) = eval_expr_now expr in
-         eval env (State.update var res state', inp', out', None) Skip kontinue
+      | Assign (var, indices, expr) ->
+      (* eval env (State.update var res state', inp', out', None) Skip kontinue *)
+         let (st', i', o', args_values) = Expr.eval_list env config indices in
+         let (st'', i'', o'', Some value) = Expr.eval env (st', i', o', None) expr in
+         let st''' = update st'' var value args_values in
+         eval env (st''', i'', o'', None) Skip kontinue
       | Seq (prog1, prog2) ->         
          (* eval env (eval env config kontinue prog1) kontinue prog2 *)
          eval env config (prepend_kontinue prog2 kontinue) prog1
@@ -295,12 +324,13 @@ module Stmt =
            eval env after_cond_eval (prepend_kontinue loop kontinue) Skip (* right? *)
          else eval env after_cond_eval Skip kontinue
       | Call (name, args_exprs) ->
-         let eval_arg (conf, results) expr =
-           let (_, _, _, Some (Value.Int res) as conf') = Expr.eval env conf expr
-           in (conf', results@[Value.of_int res]) in
-         let (config', args_values) =
-           List.fold_left eval_arg (config, []) args_exprs in
-         let after_call = env#definition env name args_values config' in
+         (* let eval_arg (conf, results) expr =
+          *   let (_, _, _, Some (Value.Int res) as conf') = Expr.eval env conf expr
+          *   in (conf', results@[Value.of_int res]) in
+          * let (config', args_values) =
+          *   List.fold_left eval_arg (config, []) args_exprs in *)
+         let (st', i', o', args_values) = Expr.eval_list env config args_exprs in
+         let after_call = env#definition env name args_values (st', i', o', None) in
          eval env after_call Skip kontinue
       | Return opt -> match opt with
                       | Some expr -> eval_expr_now expr
@@ -315,10 +345,13 @@ module Stmt =
       | [], None -> If (cond, positive, Skip)
       | [], Some else_cmd -> If (cond, positive, else_cmd)
 
+    let e2s = GT.transform(Expr.t) (new @Expr.t[show]) ()
+    let el2sl exprs = String.concat "," (List.map e2s exprs)
+                               
     ostap (	  
       base: !(Expr.parse);
 
-      assign: v:IDENT ":=" e:base {Assign (v, [], e)};
+      assign: v:IDENT inds:(!(Expr.indices_seq)) ":=" e:base {Assign (v, inds, e)};
       (* read: "read" "(" v:IDENT ")" {Read v};
        * write: "write" "(" e:base ")" {Write e}; *)
       skip: "skip" {Skip};
