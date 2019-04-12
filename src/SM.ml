@@ -47,8 +47,6 @@ let rec eval env (cs, (ds:Value.t list), (state, inp, out, (foo: Value.t option)
 
     | _, CONST value -> (cs, (Value.of_int value)::ds, subconf)
     | _, STRING str -> (cs, (Value.of_string str)::ds, subconf)
-    (* | (_, _, (_, value::rest, _, _)), READ -> (cs, value::ds, (state, rest, out, foo))
-     * | (_, value::rest, (_, _, _, _)), WRITE -> (cs, rest, (state, inp, out@[value], foo)) *)
     | _, LD (var) -> (cs, (State.eval state var)::ds, subconf)
     | (_, value::rest, _), ST (var) -> (cs, rest, (State.update var value state, inp, out, foo))
     | (_, _, _), STA (var, inds_amount) -> (* ia stack tops are indices, next is value *)
@@ -73,9 +71,6 @@ let rec eval env (cs, (ds:Value.t list), (state, inp, out, (foo: Value.t option)
               eval env after_builtin next))
      | (BEGIN (_, args, locals))::next ->
         let state_pre = State.enter state (args @ locals) in
-        (* args values are on stack *)
-        (* let restore_seq = List.map (fun arg -> ST arg) args in
-         * let config_before = eval env (cs, ds, (state_pre, inp, out, foo)) restore_seq in *)
         let (args_values,  stack') = split (List.length args) ds in
         let state_arged = List.fold_right2 State.update args args_values state_pre in
         eval env (cs, stack', (state_arged, inp, out, foo)) next
@@ -221,6 +216,5 @@ let rec compile (defs, main) =
     let proc_body, comp  = compile_impl comp body in
     let proc = [LABEL name; BEGIN (name, args, locals)] @ proc_body @ [END] in
     (collected @ proc, comp) in
-  (* let procedures = List.concat (List.map compile_procedure defs) in *)
   let procedures, _ = List.fold_left compile_procedure ([], compiler) defs in
   main_program @ [END] @ procedures
