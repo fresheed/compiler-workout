@@ -44,8 +44,7 @@ type instr =
 (* a conditional jump                                   *) | CJmp  of string * string
 (* a non-conditional jump                               *) | Jmp   of string
 (* directive                                            *) | Meta  of string
-(*comment*)                                                | Comment
-
+                                                                            
 (* Instruction printer *)
 let show instr =
   let binop = function
@@ -80,7 +79,7 @@ let show instr =
   | Jmp    l           -> Printf.sprintf "\tjmp\t%s" l
   | CJmp  (s , l)      -> Printf.sprintf "\tj%s\t%s" s l
   | Meta   s           -> Printf.sprintf "%s\n" s
-  | Comment              -> Printf.sprintf "\t// ---"
+
 (* Opening stack machine to use instructions without fully qualified names *)
 open SM
 
@@ -90,23 +89,9 @@ open SM
 
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
-*)
-(* let compile env code =
- *   let suffix = function
- *   | "<"  -> "l"
- *   | "<=" -> "le"
- *   | "==" -> "e"
- *   | "!=" -> "ne"
- *   | ">=" -> "ge"
- *   | ">"  -> "g"
- *   | _    -> failwith "unknown operator"	
- *   in
- *   let rec compile' env scode = failwith "Not implemented" in
- *   compile' env code
- * 
- * =======
-*)
-       
+ *)
+
+
 let compile_binop op loc_x loc_y loc_r =
   let y2a_compute_send comp = [Mov (loc_y, eax)] @ comp @ [Mov (eax, loc_r)] in
   let compareyx_single_send flag = [Mov (loc_y, eax); Binop ("-", loc_x, eax);
@@ -125,17 +110,17 @@ let compile_binop op loc_x loc_y loc_r =
      | "*" -> y2a_compute_send [Binop ("*", loc_x, eax)]
      | "/" -> y2a_compute_send [Cltd; IDiv loc_x]
      | "%" -> y2a_compute_send [Cltd; IDiv loc_x; Mov (edx, eax)]
-                
+
      | "==" -> compareyx_single_send "z"
      | "!=" -> compareyx_single_send "nz"
      | "<=" -> compareyx_double_send "z" "s" "!!"
      | "<" -> compareyx_single_send "s"
      | ">=" -> compareyx_double_send "z" "ns" "!!"
      | ">" -> compareyx_double_send "nz" "ns" "&&"
-                                    
+
      | "!!" -> logicop_send "!!"
      | "&&" -> logicop_send "&&"
-       
+
 let compile_instr env instr =
   let force_reg_mov loc_from loc_to = match loc_from, loc_to with
     | R _ , _
@@ -183,6 +168,10 @@ let compile_instr env instr =
         let const_setup = (Printf.sprintf "\t.set %s, %d" env#lsize (env#allocated * word_size)) in
         env, [Label env#epilogue] @ epilogue @ [Ret; Meta const_setup]
      | CALL (name, args_amount, returns_value) ->
+        let name = match name with
+          | "write" -> "Lwrite"
+          | "read" -> "Lread"
+          | _ -> name in
         let save_registers, restore_registers =
           let reg_ops reg = Push reg, Pop reg in
           let op_pairs = List.map reg_ops env#live_registers in
@@ -202,22 +191,37 @@ let compile_instr env instr =
           else env, []
         in env, save_registers @ symbolic2hardware @ [Call name]
                 @ restore_stack @ restore_registers @ hardware2symbolic
-                              
-                                                              
+       
+(* let compile env code =
+ *   let suffix = function
+ *   | "<"  -> "l"
+ *   | "<=" -> "le"
+ *   | "==" -> "e"
+ *   | "!=" -> "ne"
+ *   | ">=" -> "ge"
+ *   | ">"  -> "g"
+ *   | _    -> failwith "unknown operator"	
+ *   in
+ *   let rec compile' env scode = failwith "Not implemented" in
+ *   compile' env code *)
+                                                        
+
 let rec compile env program = match program with
-  | [] -> env, [Comment]
+  (* | [] -> env, [Comment] *)
+  | [] -> env, []
   | cmd::program' -> let (env', cmd_compiled) = compile_instr env cmd in
                      let (env'', program_compiled) = compile env' program' in
-                     env'', [Comment] @ cmd_compiled  @ program_compiled
+                     env'', [] @ cmd_compiled  @ program_compiled
 
-                                                              
+
 (* A set of strings *)           
 module S = Set.Make (String)
 
 (* Environment implementation *)
-(* Had problems with installing GT on ocaml 4.06, and this feature requires new ocaml *)
+(* let make_assoc l = List.combine l (List.init (List.length l) (fun x -> x)) *)
 let rec buildList i n = let x = i+1 in if i <= n then i::(buildList x n) else []
 let make_assoc l = List.combine l (buildList 0 ((List.length l) - 1))
+
 
 class env =
   object (self)
