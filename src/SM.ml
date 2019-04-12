@@ -64,11 +64,11 @@ let rec eval env (cs, (ds:Value.t list), (state, inp, out, (foo: Value.t option)
         let target = if ((mode="z") == (Value.to_int top = 0)) then goto else next in
         eval env (cs, rest, subconf) target
      | (CALL (name, args_amount, should_return))::next ->
-        (try
-          eval env ((next, state)::cs, ds, subconf) (env#labeled name)
-        with Not_found ->
-              (let after_builtin = env#builtin config2 name args_amount (should_return) in
-              eval env after_builtin next))
+        if env#is_label name
+        then eval env ((next, state)::cs, ds, subconf) (env#labeled name)
+        else
+          let after_builtin = env#builtin config2 name args_amount (should_return)
+          in eval env after_builtin next
      | (BEGIN (_, args, locals))::next ->
         let state_pre = State.enter state (args @ locals) in
         let (args_values,  stack') = split (List.length args) ds in
