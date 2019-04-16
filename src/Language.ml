@@ -2,11 +2,16 @@
    The library provides "@type ..." syntax extension and plugins like show, etc.
 *)
 open GT
+(* open Option *)
 
 (* Opening a library for combinator-based syntax analysis *)
 open Ostap
 open Combinators
 
+let is_some = function
+  | Some _ -> true
+  | None -> false
+              
 (* Values *)
 module Value =
   struct
@@ -190,7 +195,11 @@ module Expr =
       | "!=" -> bti |> (<>)
       | "&&" -> fun x y -> bti (itb x && itb y)
       | "!!" -> fun x y -> bti (itb x || itb y)
-      | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)    
+      | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)
+
+    let e2s = GT.transform(t) (new @t[show]) ()
+    let el2sl es = String.concat ", " (List.map e2s es)
+    let log_call name args_exprs = prerr_endline (Printf.sprintf "Calling %s with [%s]" name (el2sl args_exprs))                         
     
     let rec eval env ((st, i, o, (r : Value.t option)) as conf) expr =
       let set_result res = (st, i, o, Some res) in
@@ -203,6 +212,7 @@ module Expr =
          let result = to_func op (a1) (a2) in
          (st'', i'', o'', Some (Value.of_int result))
       | Call (func, args_exprs) ->
+         (* let _ = log_call func args_exprs in *)
          let (st', i', o', args_values) = eval_list env conf args_exprs in
          env#definition env func args_values (st', i', o', None)
       | String str -> set_result (Value.of_string (Bytes.of_string str))
@@ -215,6 +225,9 @@ module Expr =
       | Length expr ->
          let (st', i', o', Some value) = eval env conf expr
          in env#definition env ".length" [value] (st', i', o', None)
+      | Sexp (name, subexps) ->
+         let (st', i', o', subvalues) = eval_list env conf subexps in         
+         (st', i', o', Some (Value.Sexp (name, subvalues)))
     and eval_list env conf xs =
       let vs, (st, i, o, _) =
         List.fold_left
@@ -344,6 +357,22 @@ module Stmt =
       in
       State.update x (match is with [] -> v | _ -> update (State.eval st x) v is) st
 
+    let rec match_pattern value pattern = match pattern with
+      | Pattern.Wildcard -> Some []
+      | Pattern.Ident var -> Some [(var, value)]
+      | Pattern.Sexp (name, subpatterns) ->
+         match value with
+         | Value.Sexp (name', subvalues) ->
+            if (name = name') && (List.length subpatterns = List.length subvalues)
+            then
+              let subresults = List.map2 match_pattern subvalues subpatterns in
+              if List.for_all (is_some) subresults
+              then
+                Some (List.concat (List.map (fun (Some lst) -> lst) subresults))
+              else None
+            else None
+         | _ -> failwith "Tried to match pattern with non-sexp"
+
     let rec eval env (state, input, output, (res : Value.t option) as config) kontinue program =
       let eval_expr_now expr = Expr.eval env config expr in
       let set_var var value = State.update var value state in
@@ -360,7 +389,6 @@ module Stmt =
          let st''' = update st'' var value args_values in
          eval env (st''', i'', o'', None) Skip kontinue
       | Seq (prog1, prog2) ->         
-         (* eval env (eval env config kontinue prog1) kontinue prog2 *)
          eval env config (prepend_kontinue prog2 kontinue) prog1
       | If (cond, positive, negative) ->
          let (_, _, _, Some (Value.Int res) as after_cond_eval) = eval_expr_now cond in
@@ -379,7 +407,23 @@ module Stmt =
          then (* then eval env after_cond_eval kontinue loop *)
            eval env after_cond_eval (prepend_kontinue loop kontinue) Skip
          else eval env after_cond_eval Skip kontinue
+      | Case (expr, variants) ->
+         (let (st', i', o', Some value as after_eval) = eval_expr_now expr in
+         try
+           let try_match (pattern, stmt) = match (match_pattern value pattern) with
+             | Some lst -> Some (lst, stmt)
+             | None -> None in
+           let (Some (branch_locals, stmt)) = List.find (is_some) (List.map try_match variants) in
+           let (bl_vars, _) = List.split branch_locals in
+           let branch_state_pre = List.fold_left (fun st (var, value) -> State.update var value st) (State.push state State.undefined bl_vars) branch_locals in
+           let (st'', i'', o'', res'') = eval env (branch_state_pre, i', o', None) Skip stmt in
+           (* let st''' = State.leave st'' branch_state_pre in *)
+           let st''' = State.drop st'' in
+           eval env (st''', i'', o'', res'') Skip kontinue
+         with Not_found -> failwith "Pattern matching failed"
+         )
       | Call (name, args_exprs) ->
+         (* let _ = Expr.log_call name args_exprs in *)
          let (st', i', o', args_values) = Expr.eval_list env config args_exprs in
          let after_call = env#definition env name args_values (st', i', o', None) in
          eval env after_call Skip kontinue
@@ -464,6 +508,7 @@ let eval (defs, body) i =
       (object
          method definition env f args ((st, i, o, r) as conf) =
            try
+             (* let _ = log_call f args in *)
              let xs, locs, s      =  snd @@ M.find f m in
              let st'              = List.fold_left (fun st (x, a) -> State.update x a st) (State.enter st (xs @ locs)) (List.combine xs args) in
              let st'', i', o', r' = Stmt.eval env (st', i, o, r) Stmt.Skip s in
