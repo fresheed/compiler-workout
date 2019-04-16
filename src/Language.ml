@@ -203,11 +203,6 @@ module Expr =
          let result = to_func op (a1) (a2) in
          (st'', i'', o'', Some (Value.of_int result))
       | Call (func, args_exprs) ->
-         (* let eval_arg (conf, results) expr =
-          *   let (_, _, _, Some (Value.Int res) as conf') = eval env conf expr
-          *   in (conf', results@[Value.of_int res]) in
-          * let (config', args_values) =
-          *   List.fold_left eval_arg (conf, []) args_exprs in *)
          let (st', i', o', args_values) = eval_list env conf args_exprs in
          env#definition env func args_values (st', i', o', None)
       | String str -> set_result (Value.of_string (Bytes.of_string str))
@@ -261,9 +256,15 @@ module Expr =
       args_list: -"(" !(Util.list0)[parse] -")";
       funcall: fnc:IDENT args:args_list {Call (fnc, args)};
 
+      sexp: "`" name:IDENT subs_opt:((-"(" (!(Util.list)[parse]) -")")?)
+                                      {match subs_opt with
+                                         Some subs -> Sexp (name, subs)
+                                       | None -> Sexp (name, [])};
+
       main: (* no left recursion *)
         -"(" parse -")"
         | funcall
+        | sexp
         | n:DECIMAL {Const n}
         | x:IDENT   {Var x}
         | "[" elements:!(Util.list0)[parse] "]" {Array elements}
@@ -298,11 +299,16 @@ module Stmt =
 
         (* Pattern parser *)                                 
         ostap (
-          parse: empty {failwith "Not implemented"}
+          wildcard: "_" {Wildcard};
+          sexp: "`" name:IDENT subs_opt:((-"(" (!(Util.list)[parse]) -")")?)
+                                          {match subs_opt with Some subs -> Sexp (name, subs) | None -> Sexp (name, [])};
+          var: name:IDENT {Ident name};
+          parse: wildcard | sexp | var
         )
         
         let vars p =
           (* transform(t) (fun f -> object inherit [string list, _] @t[foldl] f method c_Ident s _ name = name::s end) [] p          *)
+          (* definition above doesn't compile, use one from video *)
           transform(t) (object inherit [string list] @t[foldl] method c_Ident s _ name = name::s end) [] p
       end
         
@@ -392,6 +398,7 @@ module Stmt =
 
     ostap (	  
       base: !(Expr.parse);
+      pattern: !(Pattern.parse);
 
       assign: v:IDENT inds:(!(Expr.indices_seq)) ":=" e:base {Assign (v, inds, e)};
       (* read: "read" "(" v:IDENT ")" {Read v};
@@ -410,7 +417,9 @@ module Stmt =
       while_loop: "while" cond:base "do" body:parse "od" {While (cond, body)};
       repeat_loop: "repeat" body:parse "until" cond:base {Repeat (body, cond)};
       for_loop: "for" init:parse "," cond:base "," update:parse "do" body:parse "od" {Seq (init, While (cond, Seq (body, update)))};
-      grouped: ite | while_loop | repeat_loop | for_loop;
+      pattern_match: p:pattern "->" result:parse {(p, result)};
+      caseof: "case" value:base "of" branches:(!(Util.listBy)[ostap ("|")][pattern_match]) "esac" {Case (value, branches)};
+      grouped: ite | while_loop | repeat_loop | for_loop | caseof;
       seq: cmd1:(single | grouped)  ";" cmd2:parse {Seq (cmd1, cmd2)};
 
       parse: seq | grouped | single
