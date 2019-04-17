@@ -24,6 +24,7 @@ open Language
 (* enters a scope                  *) | ENTER   of string list
 (* leaves a scope                  *) | LEAVE
 (* comment                  *)        | COMMENT of string
+(*  *)                                | CZCLEARJMP of string * int
 with show
 
 
@@ -107,11 +108,26 @@ let rec eval env (cs, (ds:Value.t list), (state, inp, out, (foo: Value.t option)
                     let state_after = State.leave state prev_state in
                     eval env (rest_cs, ds, (state_after, inp, out, foo)) prev_prog
                  | [] -> config2)
+     | (ENTER args)::next ->
+        let state_pre = State.push state State.undefined args in
+        let (args_values,  stack') = split (List.length args) ds in
+        let state_arged = List.fold_right2 State.update args args_values state_pre in
+        eval env (cs, stack', (state_arged, inp, out, foo)) next
+     | LEAVE::next -> eval env (cs, ds, (State.drop state, inp, out, foo)) next
+     | (CZCLEARJMP (label, depth))::next ->
+        let top::stack' = ds in
+        if Value.to_int top = 0
+        then let (_,  stack'') = split depth stack' in
+             let goto = (env#labeled label) in
+             eval env (cs, stack'', subconf) goto
+        else eval env (cs, stack', subconf) next        
      | cmd::rest -> eval env (eval_cmd config2 cmd) rest
 
   in match program with
      | [] -> config2
-     | cmd::_ -> Printf.eprintf "Executing %s with stack [%s]\n" (show insn cmd) (String.concat " , " (List.map Value.v2s ds)); eval_complex_cmd config2 program
+     | cmd::_ ->
+        (* Printf.eprintf "Executing %s with stack [%s]\n" (show insn cmd) (String.concat " , " (List.map Value.v2s ds)); *)
+        eval_complex_cmd config2 program
 
 (* Top-level evaluation
 
@@ -120,7 +136,7 @@ let rec eval env (cs, (ds:Value.t list), (state, inp, out, (foo: Value.t option)
    Takes a program, an input stream, and returns an output stream this program calculates
 *)
 let run p i =
-  print_prg p;
+  (* print_prg p; *)
   let module M = Map.Make (String) in
   let rec make_map m = function
   | []              -> m
@@ -154,36 +170,44 @@ let run p i =
 
    Takes a program in the source language and returns an equivalent program for the
    stack machine
-*)
+ *)
+let soi = string_of_int
+let rec list_init i n = let x = i+1 in if i < n then i::(list_init x n) else []
 class compiler =
   object (self)
     val label_count = 0
+    val caseof_count = 0
+    val cur_patterns_count = 0
 
     method next_label = {< label_count = label_count+1 >}
+                          
+    method suffix = soi label_count 
     method get_if_labels =
-      let suffix = string_of_int label_count
-      in "else_" ^ suffix, "fi_" ^ suffix, self#next_label
+      "else_" ^ self#suffix, "fi_" ^ self#suffix, self#next_label
     method get_while_labels =
-      let suffix = string_of_int label_count
-      in "loop_" ^ suffix, "od_" ^ suffix, self#next_label
+      "loop_" ^ self#suffix, "od_" ^ self#suffix, self#next_label
     method get_opt_while_labels =
-      let suffix = string_of_int label_count
-      in "loop_" ^ suffix, "checkwhile_" ^ suffix, self#next_label
+      "loop_" ^ self#suffix, "checkwhile_" ^ self#suffix, self#next_label
     method get_repeatuntil_label =
-      let suffix = string_of_int label_count
-      in "repeat_" ^ suffix, self#next_label
+      "repeat_" ^ self#suffix, self#next_label
+
+    method get_caseof_labels amount =
+      let variant_label index = "pattern_" ^ self#suffix ^ soi index in
+      (List.map variant_label (list_init 0 amount),
+       variant_label amount, "esac_" ^ self#suffix,
+       self#next_label)
   end
 
 (* TODO *)
 let element_at_top_destructive index = [CONST index; SWAP; CALL (".elem", 2, true)]
 let element_at_top index = [DUP] @ element_at_top_destructive index
 
-let rec compile_matcher (LABEL next as next_label) pattern = match pattern with
+let rec compile_matcher next_label depth pattern = match pattern with
   | Stmt.Pattern.Ident var -> [DROP]
   | Stmt.Pattern.Wildcard -> [DROP]
   | Stmt.Pattern.Sexp (name, subsexps) ->
-     [DUP; TAG name; CJMP ("z", next)] @
-       let compile_subpattern index subpattern = element_at_top index @ compile_matcher next_label subpattern in
+     [DUP; TAG name; CZCLEARJMP (next_label, depth)] @
+       let compile_subpattern index subpattern = element_at_top index @ compile_matcher next_label (depth + 1) subpattern in
        List.concat (List.mapi compile_subpattern subsexps) @ [DROP]
 
                                                                
@@ -204,7 +228,8 @@ let rec compile_binding pattern =
   in
   (* assume initial value on stack top *)
   let extract_bind_value path = [DUP] @ (List.concat (List.map element_at_top_destructive path)) @ [SWAP] in
-  let var_pathes = collect_var_pathes pattern in
+  (* compute bindings in reverse order *)
+  let var_pathes = List.rev (collect_var_pathes pattern) in
   List.concat (List.map extract_bind_value var_pathes)
   (* now stack is like [a_1...a_n value@stacktop] *)
 
@@ -273,14 +298,26 @@ let rec compile (defs, main) =
     | Stmt.Return opt_value -> (match opt_value with
                                | Some exp -> expr exp @ [RET true]
                                | None -> [RET false]), compiler
-    | Stmt.Case (to_match, (pattern, stmt)::_) ->
-       Printf.eprintf "--- ONLY ONE BRANCH AND CASE; SHOULD MODIFY NEXT LABEL PASSING; NO ACTUAL BINDING AND SCOPE CHANGING ---\n";
-       let fail_label = LABEL "fail_esac" in
-       let out_label = LABEL "out_esac" in
-       let stmt_body, compiler  = compile_impl compiler stmt in
-       expr to_match @ [DUP] @ compile_matcher fail_label pattern @ [COMMENT "branch ended"] 
-       @ (compile_binding pattern) @ [DROP; COMMENT "binding ended"] @ stmt_body
-       @ [COMMENT "body ended"]@ [fail_label; DROP; out_label], compiler
+    | Stmt.Case (to_match, variants) ->
+       Printf.eprintf "--- ONLY ONE BRANCH AND CASE; SHOULD MODIFY NEXT LABEL PASSING ---\n";
+       let variants_labels, mock_label, esac_label, compiler = compiler#get_caseof_labels (List.length variants) in
+       let labels_pairs = List.combine variants_labels (let _::shifted = variants_labels in shifted @ [mock_label]) in
+       
+       let compile_variant_impl comp (pattern, stmt) (cur_label, next_label) =
+         let stmt_body, comp  = compile_impl comp stmt in
+         [LABEL cur_label; DUP] @ compile_matcher next_label 1 pattern
+         @ [COMMENT "matching ended"] 
+         @ (compile_binding pattern) @ [DROP]
+          @ [COMMENT "binding ended"]
+         @ [ENTER (List.rev (Stmt.Pattern.vars pattern))] @ stmt_body
+         @ [LEAVE; JMP esac_label]
+         @ [COMMENT "body ended"], comp in 
+       let compile_variant (collected, comp) variant pair=
+         let variant_body, comp = compile_variant_impl comp variant pair in
+         (collected @ variant_body, comp) in
+       let merged_variants, compiler = List.fold_left2 compile_variant ([], compiler) variants labels_pairs in
+       expr to_match @ merged_variants @ [LABEL mock_label(* ; DROP *); LABEL esac_label],
+       compiler
   in
   let main_program, compiler = compile_impl (new compiler) main in
   let compile_procedure (collected, comp) (name, (args, locals, body)) =
