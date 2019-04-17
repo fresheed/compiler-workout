@@ -135,6 +135,22 @@ module Builtin =
                     )         
     | ".length"     -> (st, i, o, Some (Value.of_int (match List.hd args with Value.Sexp (_, a) -> List.length a | Value.Array a -> Array.length a | Value.String s -> Bytes.length s)))
     | ".array"      -> (st, i, o, Some (Value.of_array @@ Array.of_list args))
+    | ".string"      ->
+       let make_string str = Some (Value.String (Bytes.of_string str)) in
+       let rec convert value = 
+         match value with
+         | (Value.String bytes as str) ->
+            Printf.sprintf "\"%s\"" (Bytes.to_string bytes)
+         | (Value.Int num) -> string_of_int num
+         | (Value.Array elements) ->
+            let elements = String.concat ", " (List.map convert (Array.to_list elements)) in
+            Printf.sprintf "[%s]" elements
+         | (Value.Sexp (name, elements)) ->
+            if (List.length elements != 0)
+            then let elements = String.concat ", " (List.map convert elements) in
+                 Printf.sprintf "`%s (%s)" name elements
+            else Printf.sprintf "`%s" name
+       in (st, i, o, make_string (convert (List.hd args)))
     | "isArray"  -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0))
     | "isString" -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0))
     | x -> failwith (Printf.sprintf "Unknown fun: %s" x)
@@ -296,7 +312,7 @@ module Expr =
                                           | [] -> arr
                                           | _ -> build_index_sequence arr inds};
       primary:
-        arr:indexed l:".length"? {match l with | Some _ -> Length arr | None -> arr}
+        ixd:(arr:indexed len_opt:".length"? {match len_opt with | Some _ -> Length arr | None -> arr}) str_opt:".string"? {match str_opt with | Some _ -> Call (".string", [ixd]) | None -> ixd}
     )    
     
   end

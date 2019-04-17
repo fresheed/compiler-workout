@@ -299,7 +299,6 @@ let rec compile (defs, main) =
                                | Some exp -> expr exp @ [RET true]
                                | None -> [RET false]), compiler
     | Stmt.Case (to_match, variants) ->
-       Printf.eprintf "--- ONLY ONE BRANCH AND CASE; SHOULD MODIFY NEXT LABEL PASSING ---\n";
        let variants_labels, mock_label, esac_label, compiler = compiler#get_caseof_labels (List.length variants) in
        let labels_pairs = List.combine variants_labels (let _::shifted = variants_labels in shifted @ [mock_label]) in
        
