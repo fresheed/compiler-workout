@@ -23,13 +23,17 @@ open Language
 (* checks the tag of S-expression  *) | TAG     of string
 (* enters a scope                  *) | ENTER   of string list
 (* leaves a scope                  *) | LEAVE
+(* comment                  *)        | COMMENT of string
 with show
-                                                   
+
+
+let i2s = GT.transform(insn) (new @insn[show]) ()
+let print_prg p = List.iter (fun i -> Printf.eprintf "%s\n" (show(insn) i)) p
+                            
+       
 (* The type for the stack machine program *)
 type prg = insn list
 
-let print_prg p = List.iter (fun i -> Printf.printf "%s\n" (show(insn) i)) p
-                            
 (* The type for the stack machine configuration: control stack, stack and configuration from statement
    interpreter
 *)
@@ -50,13 +54,27 @@ let split n l =
   unzip ([], l) n
           
 let rec eval env (cs, (ds:Value.t list), (state, inp, out, (foo: Value.t option) as subconf) as config2) program =
-  let eval_cmd config command = match config, command with
+  let rec eval_cmd config command = match config, command with
     | (_, y::x::rest, _), BINOP (str_op)
       -> let result=Value.of_int (Expr.to_func str_op (Value.to_int x) (Value.to_int y))
          in (cs, result::rest, subconf)
 
+    | _, COMMENT _ -> (cs, ds, subconf)
     | _, CONST value -> (cs, (Value.of_int value)::ds, subconf)
     | _, STRING str -> (cs, (Value.of_string (Bytes.of_string str))::ds, subconf)
+    | _, SEXP (name, size) ->
+       let (values, ds') = split size ds in
+       let value = Value.Sexp (name, values) in
+       (cs, value::ds', subconf)
+    | _, DROP -> let _::ds' = ds in (cs, ds', subconf)
+    | _, DUP -> let top::_ = ds in (cs, top::ds, subconf)
+    | _, SWAP -> let x::y::ds' = ds in (cs, y::x::ds', subconf)
+    | _, TAG (name) ->
+       let top::ds' = ds in
+       let value = match top with
+         | Value.Sexp (name', _) -> Value.of_int (if name=name' then 1 else 0)
+         | _ -> Value.of_int 0 in
+       (cs, value::ds', subconf)
     | _, LD (var) -> (cs, (State.eval state var)::ds, subconf)
     | (_, value::rest, _), ST (var) -> (cs, rest, (State.update var value state, inp, out, foo))
     | (_, _, _), STA (var, inds_amount) -> (* ia stack tops are indices, next is value *)
@@ -65,8 +83,7 @@ let rec eval env (cs, (ds:Value.t list), (state, inp, out, (foo: Value.t option)
        (cs, ds', (state', inp, out, foo))
     | _, LABEL _ -> config
 
-  in match program with
-     | [] -> config2
+  and eval_complex_cmd config2 program =  match program with
      | (JMP label)::_ -> eval env config2 (env#labeled label)
      | (CJMP (mode, label))::next ->
         let top::rest = ds in
@@ -92,6 +109,10 @@ let rec eval env (cs, (ds:Value.t list), (state, inp, out, (foo: Value.t option)
                  | [] -> config2)
      | cmd::rest -> eval env (eval_cmd config2 cmd) rest
 
+  in match program with
+     | [] -> config2
+     | cmd::_ -> Printf.eprintf "Executing %s with stack [%s]\n" (show insn cmd) (String.concat " , " (List.map Value.v2s ds)); eval_complex_cmd config2 program
+
 (* Top-level evaluation
 
      val run : prg -> int list -> int list
@@ -99,7 +120,7 @@ let rec eval env (cs, (ds:Value.t list), (state, inp, out, (foo: Value.t option)
    Takes a program, an input stream, and returns an output stream this program calculates
 *)
 let run p i =
-  (*print_prg p;*)
+  print_prg p;
   let module M = Map.Make (String) in
   let rec make_map m = function
   | []              -> m
@@ -153,6 +174,40 @@ class compiler =
       in "repeat_" ^ suffix, self#next_label
   end
 
+(* TODO *)
+let element_at_top_destructive index = [CONST index; SWAP; CALL (".elem", 2, true)]
+let element_at_top index = [DUP] @ element_at_top_destructive index
+
+let rec compile_matcher (LABEL next as next_label) pattern = match pattern with
+  | Stmt.Pattern.Ident var -> [DROP]
+  | Stmt.Pattern.Wildcard -> [DROP]
+  | Stmt.Pattern.Sexp (name, subsexps) ->
+     [DUP; TAG name; CJMP ("z", next)] @
+       let compile_subpattern index subpattern = element_at_top index @ compile_matcher next_label subpattern in
+       List.concat (List.mapi compile_subpattern subsexps) @ [DROP]
+
+                                                               
+let rec compile_binding pattern =
+  (* cannot get why it should work; will note it in PR *)
+  (* match pattern with
+   * | Stmt.Pattern.Ident var -> [SWAP]
+   * | Stmt.Pattern.Wildcard -> [DROP]
+   * | Stmt.Pattern.Sexp (_, subsexps) ->
+   *    let compile_subpattern index subpattern = element_at_top index @ compile_binding subpattern in
+   *    (List.concat (List.mapi compile_subpattern subsexps)) @ [DROP] *)
+  let rec collect_var_pathes pat = match pat with
+    | Stmt.Pattern.Wildcard -> []
+    | Stmt.Pattern.Ident var -> [[]] (* single identifier is the endpoint *)
+    | Stmt.Pattern.Sexp (_, subsexps) ->
+       let continue_pathes i sub = List.map (List.cons i) (collect_var_pathes sub) in
+       List.concat (List.mapi continue_pathes subsexps)
+  in
+  (* assume initial value on stack top *)
+  let extract_bind_value path = [DUP] @ (List.concat (List.map element_at_top_destructive path)) @ [SWAP] in
+  let var_pathes = collect_var_pathes pattern in
+  List.concat (List.map extract_bind_value var_pathes)
+  (* now stack is like [a_1...a_n value@stacktop] *)
+
 let rec compile (defs, main) =
   let rec expr = function
   | Expr.Var   x          -> [LD x]
@@ -167,8 +222,8 @@ let rec compile (defs, main) =
                                [CALL (".array", (List.length args_exprs), true)]
   | Expr.Elem (arr, index) -> expr index @ expr arr @ [CALL (".elem", 2, true)]
   | Expr.Length (arr) -> expr arr @ [CALL (".length", 1, true)]
+  | Expr.Sexp (name, subexps) -> (List.concat (List.rev (List.map expr subexps))) @ [SEXP (name, List.length subexps)]
   in
-
   (* it's slow (n^2 for full program) but only at compile time *)
   let rec replace_label old_label new_label program = match program with
     | [] -> []
@@ -181,8 +236,6 @@ let rec compile (defs, main) =
     | Stmt.Seq (s1, s2)  -> let prog1, compiler' = compile_impl compiler s1 in
                             let prog2, compiler'' = compile_impl compiler' s2 in
                             prog1 @ prog2, compiler''
-    (* | Stmt.Read x        -> [READ; ST x], compiler
-     * | Stmt.Write e       -> expr e @ [WRITE], compiler *)
     | Stmt.Assign (x, indices, e) ->
        (match indices with
        | [] -> expr e @ [ST x], compiler
@@ -220,6 +273,14 @@ let rec compile (defs, main) =
     | Stmt.Return opt_value -> (match opt_value with
                                | Some exp -> expr exp @ [RET true]
                                | None -> [RET false]), compiler
+    | Stmt.Case (to_match, (pattern, stmt)::_) ->
+       Printf.eprintf "--- ONLY ONE BRANCH AND CASE; SHOULD MODIFY NEXT LABEL PASSING; NO ACTUAL BINDING AND SCOPE CHANGING ---\n";
+       let fail_label = LABEL "fail_esac" in
+       let out_label = LABEL "out_esac" in
+       let stmt_body, compiler  = compile_impl compiler stmt in
+       expr to_match @ [DUP] @ compile_matcher fail_label pattern @ [COMMENT "branch ended"] 
+       @ (compile_binding pattern) @ [DROP; COMMENT "binding ended"] @ stmt_body
+       @ [COMMENT "body ended"]@ [fail_label; DROP; out_label], compiler
   in
   let main_program, compiler = compile_impl (new compiler) main in
   let compile_procedure (collected, comp) (name, (args, locals, body)) =

@@ -16,7 +16,7 @@ let is_some = function
 module Value =
   struct
 
-    @type t = Int of int | String of bytes | Array of t array | Sexp of string * t list (*with show*)
+    @type t = Int of int | String of bytes | Array of t array | Sexp of string * t list
 
     let to_int = function 
     | Int n -> n 
@@ -29,6 +29,12 @@ module Value =
     let to_array = function
     | Array a -> a
     | _       -> failwith "array value expected"
+
+    let rec v2s = function
+      | Int i -> Printf.sprintf "%d" i
+      | String bs -> Bytes.to_string bs
+      | Array vals -> Printf.sprintf "[%s]" (String.concat ", " (Array.to_list (Array.map v2s vals)))
+      | Sexp (name, vals) -> Printf.sprintf "%s{%s}" name (String.concat ", " (List.map v2s vals))
 
     let sexp   s vs = Sexp (s, vs)
     let of_int    n = Int    n
