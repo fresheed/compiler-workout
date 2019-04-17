@@ -223,7 +223,7 @@ let rec compile_binding pattern =
     | Stmt.Pattern.Wildcard -> []
     | Stmt.Pattern.Ident var -> [[]] (* single identifier is the endpoint *)
     | Stmt.Pattern.Sexp (_, subsexps) ->
-       let continue_pathes i sub = List.map (List.cons i) (collect_var_pathes sub) in
+       let continue_pathes i sub = List.map (fun arr -> i::arr) (collect_var_pathes sub) in
        List.concat (List.mapi continue_pathes subsexps)
   in
   (* assume initial value on stack top *)
