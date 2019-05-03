@@ -18,9 +18,12 @@
 # define TO_DATA(x) ((data*)((char*)(x)-sizeof(int)))
 # define TO_SEXP(x) ((sexp*)((char*)(x)-2*sizeof(int)))
 
-# define UNBOXED(x) (((int) (x)) & 0x0001)
-# define UNBOX(x)   (((int) (x)) >> 1)
-# define BOX(x)     ((((int) (x)) << 1) | 0x0001)
+/* # define UNBOXED(x) (((int) (x)) & 0x0001) */
+/* # define UNBOX(x)   (((int) (x)) >> 1) */
+/* # define BOX(x)     ((((int) (x)) << 1) | 0x0001) */
+# define UNBOX(x)   (x)
+# define BOX(x)     (x)
+
 
 typedef struct {
   int tag; 
@@ -101,42 +104,42 @@ static void printStringBuf (char *fmt, ...) {
   stringBuf.ptr += written;
 }
 
-static void printValue (void *p) {
-  if (UNBOXED(p)) printStringBuf ("%d", UNBOX(p));
-  else {
-    data *a = TO_DATA(p);
+/* static void printValue (void *p) { */
+/*   if (UNBOXED(p)) printStringBuf ("%d", UNBOX(p)); */
+/*   else { */
+/*     data *a = TO_DATA(p); */
 
-    switch (TAG(a->tag)) {      
-    case STRING_TAG:
-      printStringBuf ("\"%s\"", a->contents);
-      break;
+/*     switch (TAG(a->tag)) {       */
+/*     case STRING_TAG: */
+/*       printStringBuf ("\"%s\"", a->contents); */
+/*       break; */
       
-    case ARRAY_TAG:
-      printStringBuf ("[");
-      for (int i = 0; i < LEN(a->tag); i++) {
-        printValue ((void*)((int*) a->contents)[i]);
-	if (i != LEN(a->tag) - 1) printStringBuf (", ");
-      }
-      printStringBuf ("]");
-      break;
+/*     case ARRAY_TAG: */
+/*       printStringBuf ("["); */
+/*       for (int i = 0; i < LEN(a->tag); i++) { */
+/*         printValue ((void*)((int*) a->contents)[i]); */
+/* 	if (i != LEN(a->tag) - 1) printStringBuf (", "); */
+/*       } */
+/*       printStringBuf ("]"); */
+/*       break; */
       
-    case SEXP_TAG:
-      printStringBuf ("`%s", de_hash (TO_SEXP(p)->tag));
-      if (LEN(a->tag)) {
-	printStringBuf (" (");
-	for (int i = 0; i < LEN(a->tag); i++) {
-	  printValue ((void*)((int*) a->contents)[i]);
-	  if (i != LEN(a->tag) - 1) printStringBuf (", ");
-	}
-	printStringBuf (")");
-      }
-      break;
+/*     case SEXP_TAG: */
+/*       printStringBuf ("`%s", de_hash (TO_SEXP(p)->tag)); */
+/*       if (LEN(a->tag)) { */
+/* 	printStringBuf (" ("); */
+/* 	for (int i = 0; i < LEN(a->tag); i++) { */
+/* 	  printValue ((void*)((int*) a->contents)[i]); */
+/* 	  if (i != LEN(a->tag) - 1) printStringBuf (", "); */
+/* 	} */
+/* 	printStringBuf (")"); */
+/*       } */
+/*       break; */
       
-    default:
-      printStringBuf ("*** invalid tag: %x ***", TAG(a->tag));
-    }
-  }
-}
+/*     default: */
+/*       printStringBuf ("*** invalid tag: %x ***", TAG(a->tag)); */
+/*     } */
+/*   } */
+/* } */
 
 extern void* Belem (void *p, int i) {
   data *a = TO_DATA(p);
@@ -161,18 +164,18 @@ extern void* Bstring (void *p) {
   return r->contents;
 }
 
-extern void* Bstringval (void *p) {
-  void *s;
+/* extern void* Bstringval (void *p) { */
+/*   void *s; */
   
-  createStringBuf ();
-  printValue (p);
+/*   createStringBuf (); */
+/*   printValue (p); */
 
-  s = Bstring (stringBuf.contents);
+/*   s = Bstring (stringBuf.contents); */
   
-  deleteStringBuf ();
+/*   deleteStringBuf (); */
 
-  return s;
-}
+/*  return s; */
+/* } */ 
 
 extern void* Barray (int n, ...) {
   va_list args;
@@ -227,7 +230,9 @@ extern void Bsta (int n, int v, void *s, ...) {
   va_list args;
   int i, k;
   data *a;
+
   
+  fprintf(stderr, "n = %d, v = %d, s = %p\n", n, v, s);
   va_start(args, s);
 
   for (i=0; i<n-1; i++) {
