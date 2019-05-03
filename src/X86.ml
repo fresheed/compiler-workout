@@ -135,11 +135,6 @@ let compile env code =
           let env, pushs = push_args env [] n in
           let pushs      =
             match f with
-            (* | "Barray" -> List.rev @@ (Push (L n))     :: pushs
-             * | "Bsta"   ->
-             *    let x::v::is = List.rev pushs in               
-             *    is @ [x; v] @ [Push (L (n-2))]
-             * | _  -> List.rev pushs  *)
             | "Barray" ->
                pushs @ [(Push (L n))]
             | "Bsta"   ->
@@ -147,16 +142,16 @@ let compile env code =
                let p'' = List.rev p' in
                let x::is = p'' in                           
                (List.rev is) @ [x; v] @ [Push (L (n-2))]
-               (* let x::v::is = pushs in
-                * is @ [x; v] @ [Push (L (n-2))] *)
-               (* let x::v::is = List.rev pushs in               
-                (List.rev is) @ [x; v] @ [Push (L (n-2))] *)
             | _  -> pushs 
           in
           env, pushr @ pushs @ [Call f; Binop ("+", L (n*4), esp)] @ (List.rev popr)
       in
       (if (not p) then env, code else let y, env = env#allocate in env, code @ [Mov (eax, y)])
     in
+    let mov_via_reg x y =
+      match y with
+      | S _ | M _ -> [Mov (x, eax); Mov (eax, y)]
+      | _         -> [Mov (x, y)] in
     match scode with
     | [] -> env, []
     | instr :: scode' ->
@@ -164,37 +159,24 @@ let compile env code =
           match instr with
   	  | CONST n ->
              let s, env' = env#allocate in
-	     (env', [Mov (L n, s)])
-               
+	     (env', [Mov (L n, s)])               
           | STRING s ->
              let s, env = env#string s in
              let l, env = env#allocate in
              let env, call = call env ".string" 1 true in
-             (env, Mov (M ("$" ^ s), l) :: call)
-             
+             (env, Mov (M ("$" ^ s), l) :: call)             
 	  | LD x ->
              let s, env' = (env#global x)#allocate in
-             env',
-	     (match s with
-	      | S _ | M _ -> [Mov (env'#loc x, eax); Mov (eax, s)]
-	      | _         -> [Mov (env'#loc x, s)]
-	     )               
+             env', mov_via_reg (env'#loc x) s
           | STA (x, n) ->
              let s, env = (env#global x)#allocate in
-             let push =
-               match s with
-               | S _ | M _ -> [Mov (env#loc x, eax); Mov (eax, s)]
-	       | _         -> [Mov (env#loc x, s)]
+             let push = mov_via_reg (env#loc x) s
              in
              let env, code = call env ".sta" (n+2) false in
              env, push @ code
 	  | ST x ->
 	     let s, env' = (env#global x)#pop in
-             env',
-             (match s with
-              | S _ | M _ -> [Mov (s, eax); Mov (eax, env'#loc x)]
-              | _         -> [Mov (s, env'#loc x)]
-	     )
+             env', mov_via_reg s (env'#loc x)
           | BINOP op ->
 	     let x, y, env' = env#pop2 in
              env'#push y,
@@ -283,6 +265,17 @@ let compile env code =
                | "raw" -> "Lraw"
                | _ -> f in
              call env f n p
+          | DROP -> let _, env = env#pop in env, []
+          | DUP -> let cur_top = env#peek in
+                   let next_top, env = env#allocate in
+                   env, [Mov (cur_top, next_top)]
+          | SWAP -> let top, subtop = env#peek2 in
+                    (* just always pass via eax ignoring reg-reg mov *)
+                    env, [Push top; Mov (subtop, eax);
+                          Mov (eax, top); Pop subtop]
+          (* | TAG tag -> (\* value to check is on top *\) *)
+             
+
         in
         Printf.printf "  ;;%s; ---- %s \n" (i2s instr) (env#show_stack);
         List.map (fun c -> Printf.printf "%s\n" (show c)) code';
