@@ -164,7 +164,13 @@ let compile env code =
              let s, env = env#string s in
              let l, env = env#allocate in
              let env, call = call env ".string" 1 true in
-             (env, Mov (M ("$" ^ s), l) :: call)             
+             (env, Mov (M ("$" ^ s), l) :: call)
+          | SEXP (tag, size) ->
+             let target2, env = env#allocate in
+             let target1, env = env#allocate in
+             let env, call = call env "Bsexp" (size+2) true in
+             env, Mov (L (size+1), target1) :: Mov (L (env#hash tag), target2)
+                  :: call
 	  | LD x ->
              let s, env' = (env#global x)#allocate in
              env', mov_via_reg (env'#loc x) s
@@ -235,7 +241,7 @@ let compile env code =
                  then [Mov   (x, eax); Binop (op, eax, y)]
                  else [Binop (op, x, y)]
              )
-          | LABEL s     -> env, [Label s]
+          | LABEL s     -> env#retrieve_stack s, [Label s]
 	  | JMP   l     -> env, [Jmp l]
           | CJMP (s, l) ->
               let x, env = env#pop in
@@ -268,24 +274,43 @@ let compile env code =
           | DROP -> let _, env = env#pop in env, []
           | DUP -> let cur_top = env#peek in
                    let next_top, env = env#allocate in
-                   env, [Mov (cur_top, next_top)]
+                   env, mov_via_reg cur_top next_top
           | SWAP -> let top, subtop = env#peek2 in
                     (* just always pass via eax ignoring reg-reg mov *)
                     env, [Push top; Mov (subtop, eax);
                           Mov (eax, top); Pop subtop]
-          (* | TAG tag -> (\* value to check is on top *\) *)
-             
-
+          | TAG tag -> (* sexp pointer to check is on top *)
+             let next_top, env = env#allocate in
+             let push = Mov (L (env#hash tag), next_top) in
+             let env, call_seq = call env "Btag" 2 true in
+             env, (push :: call_seq)
+          | ENTER locals ->
+             let env = env#scope locals in
+             let mov_arg (env, acc) arg =
+               let pos, env = env#pop in
+               env, (acc @ [Mov (pos, env#loc arg)]) in
+             let env, movs = List.fold_left mov_arg (env, []) locals in
+             env, movs
+          | LEAVE -> env#unscope, []
+          | COMMENT str -> env, [Comment str]
+          | CZCLEARJMP (target, size) ->
+             let skip_label, env = env#get_label "pattern_skip" in
+             let top, env' = env#pop in
+             let env'' = env'#set_cut_stack target size in
+             (* since skip label is last instruction, next one should be processed like only CMP was performed, so use env' *)
+             env'', [Binop ("cmp", L 0, top); CJmp ("nz", skip_label);
+                     Jmp (target); Label (skip_label)]
+                                    
         in
-        Printf.printf "  ;;%s; ---- %s \n" (i2s instr) (env#show_stack);
-        List.map (fun c -> Printf.printf "%s\n" (show c)) code';
+        Printf.printf "  ;;%s; ---- %s \n" (env#show_stack) (i2s instr) ;
+        (* List.map (fun c -> Printf.printf "%s\n" (show c)) code'; *)
         let env'', code'' = compile' env' scode' in
 	env'', Comment (i2s instr) :: code' @ code''
   in
   compile' env code
 
 (* A set of strings *)           
-module S = Set.Make (String) 
+module S = Set.Make (String)
 
 (* A map indexed by strings *)
 module M = Map.Make (String) 
@@ -307,6 +332,7 @@ class env =
     val fname       = ""      (* function name                     *)
     val stackmap    = M.empty (* labels to stack map               *)
     val barrier     = false   (* barrier condition                 *)
+    val add_labels = 0 (* additional labels counter *)
                         
     method show_stack =
       GT.show(list) (GT.show(opnd)) stack
@@ -332,7 +358,11 @@ class env =
                             
     (* associates a stack to a label *)
     method set_stack l = (*Printf.printf "Setting stack for %s\n" l;*) {< stackmap = M.add l stack stackmap >}
-                               
+
+    method set_cut_stack l size =
+      let _, rest = split size stack in
+      {< stackmap = M.add l rest stackmap >}
+          
     (* retrieves a stack for a label *)
     method retrieve_stack l = (*Printf.printf "Retrieving stack for %s\n" l;*)
       try {< stack = M.find l stackmap >} with Not_found -> self
@@ -377,7 +407,8 @@ class env =
       for i = 0 to min (String.length tag - 1) 4 do
         h := (!h lsl 6) lor (String.index chars tag.[i])
       done;
-      !h      
+      Printf.eprintf "Hash of %s is %d\n" tag !h;
+      !h
              
     (* registers a global variable in the environment *)
     method global x  = {< globals = S.add ("global_" ^ x) globals >}
@@ -420,6 +451,9 @@ class env =
                                      
     (* returns a name for local size meta-symbol *)
     method lsize = Printf.sprintf "L%s_SIZE" fname
+                                  
+    method get_label name = let label = Printf.sprintf "%s_%d" name add_labels in
+                            label, {< add_labels = add_labels + 1>}
 
     (* returns a list of live registers *)
     method live_registers depth =
@@ -438,7 +472,7 @@ class env =
 let genasm (ds, stmt) =
   let stmt = Language.Stmt.Seq (stmt, Language.Stmt.Return (Some (Language.Expr.Call ("raw", [Language.Expr.Const 0])))) in
   let sm_code = SM.compile (ds, stmt) in
-  (* print_prg sm_code;                            *)
+  (* print_prg sm_code; *)
   let env, code =
     compile
       (new env)

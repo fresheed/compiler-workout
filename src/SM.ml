@@ -192,7 +192,7 @@ class compiler =
       "repeat_" ^ self#suffix, self#next_label
 
     method get_caseof_labels amount =
-      let variant_label index = "pattern_" ^ self#suffix ^ soi index in
+      let variant_label index = Printf.sprintf "pattern_%s_%s" self#suffix (soi index) in
       (List.map variant_label (list_init 0 amount),
        variant_label amount, "esac_" ^ self#suffix,
        self#next_label)
@@ -302,9 +302,9 @@ let rec compile (defs, main) =
            | Stmt.Pattern.Wildcard
              | (Stmt.Pattern.Ident _) -> acc @ [v]
            | _ -> takeWhileReachable (acc @ [v]) rest in
-         takeWhileReachable [] variants in           
-       let variants_labels, mock_label, esac_label, compiler = compiler#get_caseof_labels (List.length variants) in
-       let labels_pairs = List.combine variants_labels (let _::shifted = variants_labels in shifted @ [mock_label]) in
+         takeWhileReachable [] variants in
+       let variants_labels, _, esac_label, compiler = compiler#get_caseof_labels (List.length variants) in
+       let labels_pairs = List.combine variants_labels (let _::shifted = variants_labels in shifted @ [esac_label]) in
        
        let compile_variant_impl comp (pattern, stmt) (cur_label, next_label) =
          let stmt_body, comp  = compile_impl comp stmt in
@@ -319,7 +319,7 @@ let rec compile (defs, main) =
          let variant_body, comp = compile_variant_impl comp variant pair in
          (collected @ variant_body, comp) in
        let merged_variants, compiler = List.fold_left2 compile_variant ([], compiler) variants labels_pairs in
-       expr to_match @ merged_variants @ [LABEL mock_label;
+       expr to_match @ merged_variants @ [(* LABEL mock_label; *)
                                           (* DROP; *) (* not needed if last pattern is accepting *)
                                           LABEL esac_label],
        compiler
