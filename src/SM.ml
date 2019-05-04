@@ -292,6 +292,17 @@ let rec compile (defs, main) =
                                | Some exp -> expr exp @ [RET true]
                                | None -> [RET false]), compiler
     | Stmt.Case (to_match, variants) ->
+       let variants = variants @ [(Stmt.Pattern.Wildcard, Stmt.Skip)] in
+       let variants =
+         (* leave only one all-accepting pattern (either wildcard or var) *)
+         (* to avoid compiling unreachable code with undefined stack *)
+         let rec takeWhileReachable acc vs =
+           let (p, s as v)::rest = vs in
+           match p with
+           | Stmt.Pattern.Wildcard
+             | (Stmt.Pattern.Ident _) -> acc @ [v]
+           | _ -> takeWhileReachable (acc @ [v]) rest in
+         takeWhileReachable [] variants in           
        let variants_labels, mock_label, esac_label, compiler = compiler#get_caseof_labels (List.length variants) in
        let labels_pairs = List.combine variants_labels (let _::shifted = variants_labels in shifted @ [mock_label]) in
        
@@ -308,7 +319,9 @@ let rec compile (defs, main) =
          let variant_body, comp = compile_variant_impl comp variant pair in
          (collected @ variant_body, comp) in
        let merged_variants, compiler = List.fold_left2 compile_variant ([], compiler) variants labels_pairs in
-       expr to_match @ merged_variants @ [LABEL mock_label; DROP; LABEL esac_label],
+       expr to_match @ merged_variants @ [LABEL mock_label;
+                                          (* DROP; *) (* not needed if last pattern is accepting *)
+                                          LABEL esac_label],
        compiler
   in
   let main_program, compiler = compile_impl (new compiler) main in
