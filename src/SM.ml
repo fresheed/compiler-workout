@@ -126,7 +126,7 @@ let rec eval env (cs, (ds:Value.t list), (state, inp, out, (foo: Value.t option)
   in match program with
      | [] -> config2
      | cmd::_ ->
-        (* Printf.eprintf "Executing %s with stack [%s]\n" (show insn cmd) (String.concat " , " (List.map Value.v2s ds)); *)
+        (* Printf.eprintf "stack << %s ||, Executing %s\n" (String.concat " , " (List.map Value.v2s ds)) (show insn cmd); *)
         eval_complex_cmd config2 program
 
 (* Top-level evaluation
@@ -212,13 +212,6 @@ let rec compile_matcher next_label depth pattern = match pattern with
 
                                                                
 let rec compile_binding pattern =
-  (* cannot get why it should work; will note it in PR *)
-  (* match pattern with
-   * | Stmt.Pattern.Ident var -> [SWAP]
-   * | Stmt.Pattern.Wildcard -> [DROP]
-   * | Stmt.Pattern.Sexp (_, subsexps) ->
-   *    let compile_subpattern index subpattern = element_at_top index @ compile_binding subpattern in
-   *    (List.concat (List.mapi compile_subpattern subsexps)) @ [DROP] *)
   let rec collect_var_pathes pat = match pat with
     | Stmt.Pattern.Wildcard -> []
     | Stmt.Pattern.Ident var -> [[]] (* single identifier is the endpoint *)
@@ -307,7 +300,7 @@ let rec compile (defs, main) =
          [LABEL cur_label; DUP] @ compile_matcher next_label 1 pattern
          @ [COMMENT "matching ended"] 
          @ (compile_binding pattern) @ [DROP]
-          @ [COMMENT "binding ended"]
+         @ [COMMENT "binding ended"]
          @ [ENTER (List.rev (Stmt.Pattern.vars pattern))] @ stmt_body
          @ [LEAVE; JMP esac_label]
          @ [COMMENT "body ended"], comp in 
@@ -315,7 +308,7 @@ let rec compile (defs, main) =
          let variant_body, comp = compile_variant_impl comp variant pair in
          (collected @ variant_body, comp) in
        let merged_variants, compiler = List.fold_left2 compile_variant ([], compiler) variants labels_pairs in
-       expr to_match @ merged_variants @ [LABEL mock_label(* ; DROP *); LABEL esac_label],
+       expr to_match @ merged_variants @ [LABEL mock_label; DROP; LABEL esac_label],
        compiler
   in
   let main_program, compiler = compile_impl (new compiler) main in

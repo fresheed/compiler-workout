@@ -34,7 +34,11 @@ module Value =
       | Int i -> Printf.sprintf "%d" i
       | String bs -> Bytes.to_string bs
       | Array vals -> Printf.sprintf "[%s]" (String.concat ", " (Array.to_list (Array.map v2s vals)))
-      | Sexp (name, vals) -> Printf.sprintf "%s{%s}" name (String.concat ", " (List.map v2s vals))
+      | Sexp (name, vals) ->
+         Printf.sprintf "%s%s" name
+           (if List.length vals != 0
+            then Printf.sprintf "{%s}" (String.concat ", " (List.map v2s vals))
+            else "")
 
     let sexp   s vs = Sexp (s, vs)
     let of_int    n = Int    n
