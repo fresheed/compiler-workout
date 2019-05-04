@@ -302,7 +302,7 @@ let compile env code =
                      Jmp (target); Label (skip_label)]
                                     
         in
-        Printf.printf "  ;;%s; ---- %s \n" (env#show_stack) (i2s instr) ;
+        (* Printf.printf "  ;;%s; ---- %s \n" (env#show_stack) (i2s instr) ; *)
         (* List.map (fun c -> Printf.printf "%s\n" (show c)) code'; *)
         let env'', code'' = compile' env' scode' in
 	env'', Comment (i2s instr) :: code' @ code''
@@ -407,7 +407,7 @@ class env =
       for i = 0 to min (String.length tag - 1) 4 do
         h := (!h lsl 6) lor (String.index chars tag.[i])
       done;
-      Printf.eprintf "Hash of %s is %d\n" tag !h;
+      (* Printf.eprintf "Hash of %s is %d\n" tag !h; *)
       !h
              
     (* registers a global variable in the environment *)

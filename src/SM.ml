@@ -241,6 +241,7 @@ let rec compile (defs, main) =
   | Expr.Elem (arr, index) -> expr index @ expr arr @ [CALL (".elem", 2, true)]
   | Expr.Length (arr) -> expr arr @ [CALL (".length", 1, true)]
   | Expr.Sexp (name, subexps) -> (List.concat (List.rev (List.map expr subexps))) @ [SEXP (name, List.length subexps)]
+  | Expr.StringVal value -> expr value @ [CALL (".string", 1, true)]
   in
   (* it's slow (n^2 for full program) but only at compile time *)
   let rec replace_label old_label new_label program = match program with

@@ -51,7 +51,21 @@ module Value =
 
     let update_string s i x = Bytes.set s i x; s 
     let update_array  a i x = a.(i) <- x; a
-                      
+
+    let rec convert value = 
+      match value with
+      | (String bytes as str) ->
+         Printf.sprintf "\"%s\"" (Bytes.to_string bytes)
+      | (Int num) -> string_of_int num
+      | (Array elements) ->
+         let elements = String.concat ", " (List.map convert (Array.to_list elements)) in
+         Printf.sprintf "[%s]" elements
+      | (Sexp (name, elements)) ->
+         if (List.length elements != 0)
+         then let elements = String.concat ", " (List.map convert elements) in
+              Printf.sprintf "`%s (%s)" name elements
+         else Printf.sprintf "`%s" name
+                                            
   end
 
 
@@ -140,21 +154,8 @@ module Builtin =
     | ".length"     -> (st, i, o, Some (Value.of_int (match List.hd args with Value.Sexp (_, a) -> List.length a | Value.Array a -> Array.length a | Value.String s -> Bytes.length s)))
     | ".array"      -> (st, i, o, Some (Value.of_array @@ Array.of_list args))
     | ".string"      ->
-       let make_string str = Some (Value.String (Bytes.of_string str)) in
-       let rec convert value = 
-         match value with
-         | (Value.String bytes as str) ->
-            Printf.sprintf "\"%s\"" (Bytes.to_string bytes)
-         | (Value.Int num) -> string_of_int num
-         | (Value.Array elements) ->
-            let elements = String.concat ", " (List.map convert (Array.to_list elements)) in
-            Printf.sprintf "[%s]" elements
-         | (Value.Sexp (name, elements)) ->
-            if (List.length elements != 0)
-            then let elements = String.concat ", " (List.map convert elements) in
-                 Printf.sprintf "`%s (%s)" name elements
-            else Printf.sprintf "`%s" name
-       in (st, i, o, make_string (convert (List.hd args)))
+       let make_string str = Some (Value.String (Bytes.of_string str))
+       in (st, i, o, make_string (Value.convert (List.hd args)))
     | "isArray"  -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0))
     | "isString" -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.String _ -> 1 | _ -> 0))
     | x -> failwith (Printf.sprintf "Unknown fun: %s" x)
@@ -255,6 +256,9 @@ module Expr =
       | Sexp (name, subexps) ->
          let (st', i', o', subvalues) = eval_list env conf subexps in         
          (st', i', o', Some (Value.Sexp (name, subvalues)))
+      | StringVal expr -> 
+         let (st', i', o', Some value) = eval env conf expr
+         in env#definition env ".string" [value] (st', i', o', None)
     and eval_list env conf xs =
       let vs, (st, i, o, _) =
         List.fold_left
@@ -317,7 +321,7 @@ module Expr =
                                           | [] -> arr
                                           | _ -> build_index_sequence arr inds};
       primary:
-        ixd:(arr:indexed len_opt:".length"? {match len_opt with | Some _ -> Length arr | None -> arr}) str_opt:".string"? {match str_opt with | Some _ -> Call (".string", [ixd]) | None -> ixd}
+        ixd:(arr:indexed len_opt:".length"? {match len_opt with | Some _ -> Length arr | None -> arr}) str_opt:".string"? {match str_opt with | Some _ -> StringVal ixd | None -> ixd}
     )    
     
   end
