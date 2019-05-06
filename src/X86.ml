@@ -141,10 +141,12 @@ let compile env code =
                let v::p' = pushs in
                let p'' = List.rev p' in
                let x::is = p'' in                           
-               (List.rev is) @ [x; v] @ [Push (L (n-2))]
+               (List.rev is) @ [x; v] @ [Push (L (n-2))] (* ? needs correction ?*)
             | _  -> pushs 
           in
-          env, pushr @ pushs @ [Call f; Binop ("+", L (n*4), esp)] @ (List.rev popr)
+          env, pushr @ pushs @ [Call f; Binop ("+",
+                                               L (n*4), (* no correction ? *)
+                                               esp)] @ (List.rev popr)
       in
       (if (not p) then env, code else let y, env = env#allocate in env, code @ [Mov (eax, y)])
     in
@@ -155,11 +157,12 @@ let compile env code =
     match scode with
     | [] -> env, []
     | instr :: scode' ->
-        let env', code' =
+       let box value = value*2+1 in 
+       let env', code' =
           match instr with
   	  | CONST n ->
              let s, env' = env#allocate in
-	     (env', [Mov (L n, s)])               
+	     (env', [Mov (L (box n), s)])               
           | STRING s ->
              let s, env = env#string s in
              let l, env = env#allocate in
@@ -169,6 +172,7 @@ let compile env code =
              let target2, env = env#allocate in
              let target1, env = env#allocate in
              let env, call = call env "Bsexp" (size+2) true in
+             (* ? needs correction ? *)
              env, Mov (L (size+1), target1) :: Mov (L (env#hash tag), target2)
                   :: call
 	  | LD x ->
@@ -188,65 +192,89 @@ let compile env code =
              env'#push y,
              (match op with
 	      | "/" | "%" ->
-                 [Mov (y, eax);
+                 (* (2N+1)/(2D) = K + (2R+1)/(2D) *)
+                 let correction = match op with
+                   | "/" -> [Sal1 y; Or1 y]
+                   | _ -> [] in
+                 [Mov (y, eax); (* numerator is in eax*)
                   Cltd;
-                  IDiv x;
-                  Mov ((match op with "/" -> eax | _ -> edx), y)
-                 ]
+                  (* Push x;  - don't keep original value *)
+                  Dec x;  (* -> 2D *)
+                  IDiv x; 
+                  Mov ((match op with "/" -> eax | _ -> edx), y);
+                 ] @ correction
+                 (* @ [ Pop x ] *)
               | "<" | "<=" | "==" | "!=" | ">=" | ">" ->
+                 (* correction *)
                  (match x with
                   | M _ | S _ ->
                      [Binop ("^", eax, eax);
                       Mov   (x, edx);
                       Binop ("cmp", edx, y);
                       Set   (suffix op, "%al");
+                      Sal1 eax; Or1 eax;
                       Mov   (eax, y)
                      ]
                   | _ ->
                      [Binop ("^"  , eax, eax);
                       Binop ("cmp", x, y);
                       Set   (suffix op, "%al");
+                      Sal1 eax; Or1 eax;
                       Mov   (eax, y)
                      ]
                  )
-              | "*" ->
-                 if on_stack x && on_stack y 
-		 then [Mov (y, eax); Binop (op, x, eax); Mov (eax, y)]
-                 else [Binop (op, x, y)]
-	      | "&&" ->
+              | "*" -> (* primitive implementation *)
+                 let operation =
+                   if on_stack x && on_stack y 
+		   then [Mov (y, eax); Binop (op, x, eax); Mov (eax, y)]
+                   else [Binop (op, x, y)] in
+                 [Sar1 x; Sar1 y] @ operation @ [Sal1 y; Or1 y]
+	      | "&&" | "!!" ->
+                 (* correction *)
 		 [Mov   (x, eax);
+                  Sar1 x; (* unbox *)
 		  Binop (op, x, eax);
 		  Mov   (L 0, eax);
 		  Set   ("ne", "%al");
                   
 		  Mov   (y, edx);
+                  Sar1 y; (* unbox *)
 		  Binop (op, y, edx);
 		  Mov   (L 0, edx);
 		  Set   ("ne", "%dl");
                   
                   Binop (op, edx, eax);
 		  Set   ("ne", "%al");
+                  Sal1 eax; (* box *)
+                  Or1 eax;
                   
 		  Mov   (eax, y)
                  ]		   
-	      | "!!" ->
-		 [Mov   (y, eax);
-		  Binop (op, x, eax);
-                  Mov   (L 0, eax);
-		  Set   ("ne", "%al");
-		  Mov   (eax, y)
-                 ]		   
-	      | _   ->
-                 if on_stack x && on_stack y 
-                 then [Mov   (x, eax); Binop (op, eax, y)]
-                 else [Binop (op, x, y)]
+	      (* | "!!" ->
+	       *    [Mov   (y, eax);
+	       *     Binop (op, x, eax);
+               *     Mov   (L 0, eax);
+	       *     Set   ("ne", "%al");
+	       *     Mov   (eax, y)
+               *    ]		    *)
+	      | "+" | "-"   ->
+                 let correction = match op with
+                   | "+" -> [Dec y]
+                   | "-" -> [Or1 y] in
+                 let operation = 
+                   if on_stack x && on_stack y 
+                   then [Mov   (x, eax); Binop (op, eax, y)]
+                   else [Binop (op, x, y)] in
+                 operation @ correction
              )
           | LABEL s     -> env#retrieve_stack s, [Label s]
 	  | JMP   l     -> env, [Jmp l]
           | CJMP (s, l) ->
-              let x, env = env#pop in
-              env, [Binop ("cmp", L 0, x); CJmp  (s, l)]
-                     
+             let x, env = env#pop in
+             (* correction *)
+             env, [Binop ("cmp",
+                          (* L 0 *) L 1,
+                          x); CJmp  (s, l)]                     
           | BEGIN (f, a, l) ->
              let env = env#enter f a l in
              env, [Push ebp; Mov (esp, ebp); Binop ("-", M ("$" ^ env#lsize), esp)]
@@ -298,7 +326,10 @@ let compile env code =
              let top, env' = env#pop in
              let env'' = env'#set_cut_stack target size in
              (* since skip label is last instruction, next one should be processed like only CMP was performed, so use env' *)
-             env'', [Binop ("cmp", L 0, top); CJmp ("nz", skip_label);
+             (* correction *)
+             env'', [Binop ("cmp",
+                            (* L 0, *) L 1,
+                            top); CJmp ("nz", skip_label);
                      Jmp (target); Label (skip_label)]
                                     
         in
