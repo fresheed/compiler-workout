@@ -153,7 +153,7 @@ module Builtin =
                     )         
     | ".length"     -> (st, i, o, Some (Value.of_int (match List.hd args with Value.Sexp (_, a) -> List.length a | Value.Array a -> Array.length a | Value.String s -> Bytes.length s)))
     | ".array"      -> (st, i, o, Some (Value.of_array @@ Array.of_list args))
-    | ".string"      ->
+    | ".string" | ".stringval"      -> (* same toString during interpretation *)
        let make_string str = Some (Value.String (Bytes.of_string str))
        in (st, i, o, make_string (Value.convert (List.hd args)))
     | "isArray"  -> let [a] = args in (st, i, o, Some (Value.of_int @@ match a with Value.Array  _ -> 1 | _ -> 0))
