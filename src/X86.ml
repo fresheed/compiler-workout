@@ -192,16 +192,15 @@ let compile env code =
              env'#push y,
              (match op with
 	      | "/" | "%" ->
-                 (* (2N+1)/(2D) = K + (2R+1)/(2D) *)
-                 let correction = match op with
-                   | "/" -> [Sal1 y; Or1 y]
-                   | _ -> [] in
-                 [Mov (y, eax); (* numerator is in eax*)
-                  Cltd;
-                  Dec x;  (* -> 2D *)
-                  IDiv x; 
-                  Mov ((match op with "/" -> eax | _ -> edx), y);
-                 ] @ correction
+                 (* correction *)
+                 (* primitive correction due to negative division problems *)
+                 [ Sar1 x; Sar1 y;
+                   Mov (y, eax); (* numerator is in eax*)
+                   Cltd;
+                   IDiv x; 
+                   Mov ((match op with "/" -> eax | _ -> edx), y);
+                   Sal1 y; Or1 y
+                 ] 
               | "<" | "<=" | "==" | "!=" | ">=" | ">" ->
                  (* correction is needed for final result only *)
                  (match x with
