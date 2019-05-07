@@ -198,14 +198,12 @@ let compile env code =
                    | _ -> [] in
                  [Mov (y, eax); (* numerator is in eax*)
                   Cltd;
-                  (* Push x;  - don't keep original value *)
                   Dec x;  (* -> 2D *)
                   IDiv x; 
                   Mov ((match op with "/" -> eax | _ -> edx), y);
                  ] @ correction
-                 (* @ [ Pop x ] *)
               | "<" | "<=" | "==" | "!=" | ">=" | ">" ->
-                 (* correction *)
+                 (* correction is needed for final result only *)
                  (match x with
                   | M _ | S _ ->
                      [Binop ("^", eax, eax);
@@ -223,7 +221,10 @@ let compile env code =
                       Mov   (eax, y)
                      ]
                  )
-              | "*" -> (* primitive implementation *)
+              | "*" ->
+                 (* correction *)
+                 (* primitive implementation *)
+                 (* all other tricks seem to be at least as long as this *)
                  let operation =
                    if on_stack x && on_stack y 
 		   then [Mov (y, eax); Binop (op, x, eax); Mov (eax, y)]
@@ -231,14 +232,14 @@ let compile env code =
                  [Sar1 x; Sar1 y] @ operation @ [Sal1 y; Or1 y]
 	      | "&&" | "!!" ->
                  (* correction *)
-		 [Mov   (x, eax);
-                  Sar1 x; (* unbox *)
+		 [Sar1 x; (* unbox *)
+                  Mov   (x, eax);                  
 		  Binop (op, x, eax);
 		  Mov   (L 0, eax);
 		  Set   ("ne", "%al");
                   
-		  Mov   (y, edx);
                   Sar1 y; (* unbox *)
+		  Mov   (y, edx);
 		  Binop (op, y, edx);
 		  Mov   (L 0, edx);
 		  Set   ("ne", "%dl");
