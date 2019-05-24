@@ -6,6 +6,7 @@
 # include <stdlib.h>
 # include <sys/mman.h>
 # include <assert.h>
+# include <errno.h>
 
 #define NIMPL fprintf (stderr, "Internal error: "			\
 		       "function %s at file %s, line %d is not implemented yet", \
@@ -451,14 +452,18 @@ typedef struct {
 
 static pool   from_space; // From-space (active ) semi-heap
 static pool   to_space;   // To-space   (passive) semi-heap
-static size_t *current;   // Pointer to the free space begin in active space
+/* static size_t *current;   // Pointer to the free space begin in active space */
 
 // initial semi-space size
-static size_t SPACE_SIZE = 128;
+static size_t SPACE_SIZE = 20;
 # define POOL_SIZE (2*SPACE_SIZE)
 
 // swaps active and passive spaces
-static void gc_swap_spaces (void) { NIMPL }
+static void gc_swap_spaces (void) {
+  pool tmp = from_space;
+  from_space = to_space;
+  to_space = tmp;
+}
 
 // checks if @p is a valid pointer to the active (from-) space
 # define IS_VALID_HEAP_POINTER(p)\
@@ -483,7 +488,7 @@ extern size_t * gc_copy (size_t *obj);
 static void copy_elements (size_t *where, size_t *from, int len) { NIMPL }
 
 // @extend_spaces extends size of both from- and to- spaces
-static void extend_spaces (void) { NIMPL }
+static void extend_spaces (void) { printf("Space extension is not implemented!\n"); NIMPL }
 
 // @gc_copy takes a pointer to an object, copies it
 //   (i.e. moves from from_space to to_space)
@@ -500,10 +505,77 @@ extern void gc_root_scan_data (void) { NIMPL }
 
 // @init_pool is a memory pools initialization function
 //   (is called by L__gc_init from runtime/gc_runtime.s)
-extern void init_pool (void) { NIMPL }
+extern void init_pool (void) {
+  init_one_pool(&from_space);
+  if (from_space.begin == MAP_FAILED){
+    printf("err! errno = %d\n", errno);
+    if (errno == EACCES){
+      printf("eaccess\n");
+    }
+    if (errno == EAGAIN){
+      printf("2\n");
+    }
+    if (errno == EBADF){
+      printf("3\n");
+    }
+    if (errno == EEXIST){
+      printf("4\n");
+    }
+    if (errno == EINVAL){
+      printf("5\n");
+    }
+    exit(1);
+  }
+  int success = init_one_pool(&from_space) && init_one_pool(&to_space);
+  if (!success){
+    printf("Pool initialization failed\n");
+    exit(1);
+  }  
+}
+
+int init_one_pool(pool *p){
+  p->begin = mmap(NULL, SPACE_SIZE, PROT_READ | PROT_WRITE,
+		  MAP_PRIVATE | MAP_32BIT | MAP_ANONYMOUS, 0, 0);
+  if (p->begin == MAP_FAILED){
+    return 0;
+  }
+  p->current = p->begin;
+  p->size = SPACE_SIZE;
+  p->end = p->begin + p->size;
+  return 1;
+}
 
 // @free_pool frees memory pool p
-static int free_pool (pool * p) { NIMPL }
+static int free_pool (pool * p) {
+  munmap(p->begin, p->size);
+}
+
+static void processRegion (void* ptrFrom, void* ptrTo, int depth){
+  void *address;
+  for (address = ptrFrom; address < ptrTo;  address += sizeof(int)){
+    printf("%0*cAt %p: ", depth, ' ', address);
+    int value = *((int*)address);
+    if (!UNBOXED(value)){
+      data* ptr = TO_DATA(value);
+      int tag = TAG(ptr->tag);
+      printf("Pointer, tag = %d", tag);
+      if (tag == STRING_TAG){
+	printf(", str: %s\n", ptr->contents);
+      } else if (tag == ARRAY_TAG){
+	int size = LEN(ptr->tag);	
+	printf(", size: %d\n", size);
+	processRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);
+      } else if (tag == SEXP_TAG){
+	sexp* se = (sexp*)ptr;
+	int size = LEN(ptr->tag);
+	printf(", size: %d, taghash: %d\n", size, se->tag);
+	processRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);	
+      }
+    } else {
+      printf("Non-ptr, unboxed = %d\n", UNBOX(value));
+    }
+  }  
+}
 
 // @gc performs stop-the-world mark-and-copy garbage collection
 //   and extends pools (i.e. calls @extend_spaces) if necessarily
@@ -515,10 +587,25 @@ static int free_pool (pool * p) { NIMPL }
 //   2) call @__gc_root_scan_stack (finds roots in program stack
 //        and calls @gc_test_and_copy_root for each found root)
 //   3) extends spaces if there is not enough space to be allocated after gc
-static void * gc (size_t size) { NIMPL }
+/* static void * gc (size_t size) { */
+static void * gc () {
+  printf("Static data block: %p..%p\n", &__gc_data_start, &__gc_data_end);
+  processRegion(&__gc_data_start, &__gc_data_end, 1);
+}
 
 // @alloc allocates @size memory words
 //   it enaibles garbage collection if out-of-memory,
 //   i.e. calls @gc when @current + @size > @from_space.end
 // returns a pointer to the allocated block of size @size
-extern void * alloc (size_t size) { NIMPL }
+extern void * alloc (size_t size) {
+  // called by string (+cat), array, sexp
+  void* address = from_space.current;
+  from_space.current += size;
+  if (from_space.current >= from_space.end){
+    printf("Active pool space exhausted, calling gc\n");
+    gc();
+  } else {
+    printf("Successfully allocated\n");
+  }
+  return address;
+}
