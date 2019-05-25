@@ -36,7 +36,7 @@ extern void nimpl (void) { NIMPL }
 #define LOG1(...)
 #endif
 
-# define LOGGING2
+//# define LOGGING2
 # ifdef LOGGING2
 #define LOG2(...) printf (__VA_ARGS__)
 # else
