@@ -29,11 +29,18 @@ extern void nimpl (void) { NIMPL }
 # define UNBOX(x)   ( ((int) (x)) >> 1)
 # define BOX(x)     ((((int) (x)) << 1) | 0x0001)
 
-//# define LOGGING
-# ifdef LOGGING
-#define LOG(...) printf (__VA_ARGS__)
+//# define LOGGING1
+# ifdef LOGGING1
+#define LOG1(...) printf (__VA_ARGS__)
 # else
-#define LOG(...)
+#define LOG1(...)
+#endif
+
+# define LOGGING2
+# ifdef LOGGING2
+#define LOG2(...) printf (__VA_ARGS__)
+# else
+#define LOG2(...)
 #endif
 
 typedef struct {
@@ -584,37 +591,37 @@ static void* copyObject(void* ptrFrom, size_t size){
 static void processRegion (void* ptrFrom, void* ptrTo, int depth){
   void *address;
   for (address = ptrFrom; address < ptrTo;  address += sizeof(int)){
-    LOG("%0*cAt %p: ", depth, ' ', address);
+    LOG1("%0*cAt %p: ", depth, ' ', address);
     int value = *((int*)address);
     if (!UNBOXED(value)){
       if (IS_VALID_HEAP_POINTER(value)){	
 	data* ptr = TO_DATA(value);
 	int tag = TAG(ptr->tag);
 	int blockSize;
-	LOG("Pointer, tag = %d", tag);
+	LOG1("Pointer, tag = %d", tag);
 	if (tag == STRING_TAG){
-	  LOG(", str: %s\n", ptr->contents);
+	  LOG1(", str: %s\n", ptr->contents);
 	  int strSize = sizeof(int)+1+strlen(ptr->contents);
 	  copyObject(ptr, strSize);
 	} else if (tag == ARRAY_TAG){
 	  int size = LEN(ptr->tag);	
-	  LOG(", size: %d\n", size);
+	  LOG1(", size: %d\n", size);
 	  int arrSize = sizeof(int) * (size + 1);
 	  copyObject(ptr, arrSize);
 	  processRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);
 	} else if (tag == SEXP_TAG){
 	  sexp* se = TO_SEXP(value);
 	  int size = LEN(ptr->tag);
-	  LOG(", size: %d, taghash: %d\n", size, se->tag);
+	  LOG1(", size: %d, taghash: %d\n", size, se->tag);
 	  int sexpSize = sizeof(int) * (size + 1);
 	  copyObject(se, sexpSize);
 	  processRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);	
 	}
       } else {
-	LOG("Neither value nor pointer\n");
+	LOG1("Neither value nor pointer\n");
       }
     } else {
-      LOG("Non-ptr, unboxed = %d\n", UNBOX(value));
+      LOG1("Non-ptr, unboxed = %d\n", UNBOX(value));
     }
   }  
 }
@@ -630,9 +637,9 @@ static void processRegion (void* ptrFrom, void* ptrTo, int depth){
 //        and calls @gc_test_and_copy_root for each found root)
 /* static void * gc (size_t size) { */
 static void * gc () {
-  LOG("Static data block: %p..%p\n", &__gc_data_start, &__gc_data_end);
+  LOG1("Static data block: %p..%p\n", &__gc_data_start, &__gc_data_end);
   processRegion(&__gc_data_start, &__gc_data_end, 1);
-  LOG("Stack: %p..%p\n", __gc_stack_bottom, __gc_stack_top);
+  LOG1("Stack: %p..%p\n", __gc_stack_bottom, __gc_stack_top);
   // stack bounds are set up at this moment
   processRegion(__gc_stack_top, __gc_stack_bottom, 1);
 }
@@ -696,18 +703,18 @@ static void updatePointers(){
 // returns a pointer to the allocated block of size @size
 extern void * alloc (size_t size) {
   // called by string (+cat), array, sexp
-  printf("before: %d, used: %d, needed: %d\n", from_space.size, from_space.current - from_space.begin, size);  
+  LOG2("before: %d, used: %d, needed: %d\n", from_space.size, from_space.current - from_space.begin, size);  
   if (from_space.current + size >= from_space.end){
-    printf("Active pool space exhausted, calling gc\n");
+    LOG2("Active pool space exhausted, calling gc\n");
     int requiredSize = countActiveSpace() + size;
     extend_spaces(requiredSize);
     gc();
     updatePointers();
     gc_swap_spaces();
   } else {
-    LOG("Successfully allocated\n");
+    LOG2("Successfully allocated\n");
   }
-  printf("after: %d\n", from_space.size);
+  LOG2("after: %d\n", from_space.size);
   void* address = from_space.current;
   from_space.current += size;
   return address;
