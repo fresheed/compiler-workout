@@ -12,7 +12,6 @@ __gc_stack_top:	        .long	0
 			.globl __gc_stack_top
 			.globl __gc_stack_bottom
 			.globl	L__gc_init
-			.globl	__gc_root_scan_stack
 			.extern	init_pool
 			.extern	gc_test_and_copy_root
 			.extern nimpl

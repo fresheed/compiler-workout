@@ -445,10 +445,6 @@ extern const size_t __gc_data_end, __gc_data_start;
 //   it is called from the main function (see src/X86.ml function genasm)
 extern void L__gc_init ();
 
-// @__gc_root_scan_stack (you have to define it in runtime/runtime.s)
-//   finds roots in program stack and calls @gc_test_and_copy_root for each found root
-extern void __gc_root_scan_stack ();
-
 // You also have to define two functions @__pre_gc and @__post_gc in runtime/gc_runtime.s.
 // These auxiliary functions have to be defined in oder to correctly set @__gc_stack_top.
 // Note that some of our functions (from runtime.c) activation records can be on top of the
@@ -522,9 +518,9 @@ static int extend_pool(int new_size){
 // @extend_spaces extends size of to-space before copying from from-space
 static void extend_spaces (int required_size) {
   if (to_space.size < required_size){
-    int new_size = to_space.size * 2;
+    int new_size = to_space.size * 3;
     if (new_size < required_size){
-      printf("Unexpectedly large heap required\n");
+      printf("Unexpectedly large heap required: %d, expected max %d\n", required_size, new_size);
       exit(1);
     }
     int success = extend_pool(new_size);
@@ -536,21 +532,6 @@ static void extend_spaces (int required_size) {
     to_space.current = to_space.begin;
   }
 }
-
-// @gc_copy takes a pointer to an object, copies it
-//   (i.e. moves from from_space to to_space)
-//   , rests a forward pointer, and returns new object location.
-extern size_t * gc_copy (size_t *obj) {
-  NIMPL
-}
-
-// @gc_test_and_copy_root checks if pointer is a root (i.e. valid heap pointer)
-//   and, if so, calls @gc_copy for each found root
-extern void gc_test_and_copy_root (size_t ** root) { NIMPL }
-
-// @gc_root_scan_data scans static area for root
-//   for each root it calls @gc_test_and_copy_root
-extern void gc_root_scan_data (void) { NIMPL }
 
 // @init_pool is a memory pools initialization function
 //   (is called by L__gc_init from runtime/gc_runtime.s)
@@ -613,7 +594,7 @@ static void processRegion (void* ptrFrom, void* ptrTo, int depth){
 	  sexp* se = TO_SEXP(value);
 	  int size = LEN(ptr->tag);
 	  LOG1(", size: %d, taghash: %d\n", size, se->tag);
-	  int sexpSize = sizeof(int) * (size + 1);
+	  int sexpSize = sizeof(int) * (size + 2);
 	  copyObject(se, sexpSize);
 	  processRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);	
 	}
@@ -662,7 +643,7 @@ static int countRegionSpace (void* ptrFrom, void* ptrTo){
       } else if (tag == SEXP_TAG){
 	sexp* se = TO_SEXP(value);
 	int size = LEN(ptr->tag);
-	int sexpSize = sizeof(int) * (size + 1);
+	int sexpSize = sizeof(int) * (size + 2);
 	regionSpace += sexpSize + countRegionSpace(ptr->contents, ptr->contents + sizeof(int)*size);
       }
     }
