@@ -29,6 +29,13 @@ extern void nimpl (void) { NIMPL }
 # define UNBOX(x)   ( ((int) (x)) >> 1)
 # define BOX(x)     ((((int) (x)) << 1) | 0x0001)
 
+//# define LOGGING
+# ifdef LOGGING
+#define LOG(...) printf (__VA_ARGS__)
+# else
+#define LOG(...)
+#endif
+
 typedef struct {
   int tag; 
   char contents[0];
@@ -94,7 +101,7 @@ static void extendStringBuf () {
 static void printStringBuf (char *fmt, ...) {
   va_list args    = (va_list) BOX(NULL);
   int     written = 0,
-          rest    = 0;
+    rest    = 0;
   char   *buf     = (char*) BOX(NULL);
 
  again:
@@ -163,6 +170,7 @@ extern void* Belem (void *p, int i) {
 }
 
 extern void* Bstring (void *p) {
+  __pre_gc();
   int n   = BOX(0);
   data *r = NULL;
 
@@ -171,7 +179,8 @@ extern void* Bstring (void *p) {
 
   r->tag = STRING_TAG | (n << 3);
   strncpy (r->contents, p, n + 1);
-  
+
+  __post_gc();
   return r->contents;
 }
 
@@ -189,9 +198,10 @@ extern void* Bstringval (void *p) {
 }
 
 extern void* Barray (int n, ...) {
+  __pre_gc();
   va_list args = (va_list) BOX (NULL);
   int     i    = BOX(0),
-          ai   = BOX(0);
+    ai   = BOX(0);
   data    *r   = (data*) BOX (NULL);
 
   r = (data*) alloc (sizeof(int) * (n+1));
@@ -207,10 +217,12 @@ extern void* Barray (int n, ...) {
   
   va_end(args);
 
+  __post_gc();
   return r->contents;
 }
 
 extern void* Bsexp (int n, ...) {
+  __pre_gc();
   va_list args = (va_list) BOX (NULL);
   int     i    = BOX(0);
   int     ai   = BOX(0);
@@ -236,6 +248,7 @@ extern void* Bsexp (int n, ...) {
   r->tag = va_arg(args, int);
   va_end(args);
 
+  __post_gc();
   return d->contents;
 }
 
@@ -256,7 +269,7 @@ extern int Barray_patt (void *d, int n) {
 
 extern int Bstring_patt (void *x, void *y) {
   data *rx = (data *) BOX (NULL),
-       *ry = (data *) BOX (NULL);
+    *ry = (data *) BOX (NULL);
   if (UNBOXED(x)) return BOX(0);
   else {
     rx = TO_DATA(x); ry = TO_DATA(y);
@@ -416,7 +429,7 @@ extern int Lwrite (int n) {
 /* rest a forward pointer instead of the object, scan object for pointers, call copying */
 /* for each found pointer. */
 
-
+extern size_t __gc_stack_bottom, __gc_stack_top;
 // The begin and the end of static area (are specified in src/X86.ml fucntion genasm)
 extern const size_t __gc_data_end, __gc_data_start;
 
@@ -424,6 +437,7 @@ extern const size_t __gc_data_end, __gc_data_start;
 //   it sets up stack bottom and calls init_pool
 //   it is called from the main function (see src/X86.ml function genasm)
 extern void L__gc_init ();
+
 // @__gc_root_scan_stack (you have to define it in runtime/runtime.s)
 //   finds roots in program stack and calls @gc_test_and_copy_root for each found root
 extern void __gc_root_scan_stack ();
@@ -455,7 +469,7 @@ static pool   to_space;   // To-space   (passive) semi-heap
 /* static size_t *current;   // Pointer to the free space begin in active space */
 
 // initial semi-space size
-static size_t SPACE_SIZE = 20;
+static size_t SPACE_SIZE = 32;
 # define POOL_SIZE (2*SPACE_SIZE)
 
 // swaps active and passive spaces
@@ -466,34 +480,62 @@ static void gc_swap_spaces (void) {
 }
 
 // checks if @p is a valid pointer to the active (from-) space
-# define IS_VALID_HEAP_POINTER(p)\
-  (!UNBOXED(p) &&		 \
-   from_space.begin <= p &&	 \
+# define IS_VALID_HEAP_POINTER(p)		\
+  (!UNBOXED(p) &&				\
+   from_space.begin <= p &&			\
    from_space.end   >  p)
 
 // checks if @p points to the passive (to-) space
-# define IN_PASSIVE_SPACE(p)	\
-  (to_space.begin <= p	&&	\
+# define IN_PASSIVE_SPACE(p)			\
+  (to_space.begin <= p	&&			\
    to_space.end   >  p)
 
 // chekcs if @p is a forward pointer
 # define IS_FORWARD_PTR(p)			\
   (!UNBOXED(p) && IN_PASSIVE_SPACE(p))
 
-extern size_t * gc_copy (size_t *obj);
+/* // @copy_elements */
+/* //   1) copies @len words from @from to @where */
+/* //   2) calls @gc_copy for those of these words which are valid pointers to from_space */
+/* static void copy_elements (size_t *where, size_t *from, int len) { NIMPL } */
 
-// @copy_elements
-//   1) copies @len words from @from to @where
-//   2) calls @gc_copy for those of these words which are valid pointers to from_space
-static void copy_elements (size_t *where, size_t *from, int len) { NIMPL }
+static int extend_pool(int new_size){  
+  int ptr = mremap(to_space.begin, to_space.size, new_size, 0);
+  if (ptr == MAP_FAILED){
+    return 0;
+  } else {
+    to_space.begin = ptr;
+    to_space.size = new_size;
+    to_space.end = to_space.begin + to_space.size;
+    to_space.current = to_space.begin;
+    return 1;
+  }
+}
 
-// @extend_spaces extends size of both from- and to- spaces
-static void extend_spaces (void) { printf("Space extension is not implemented!\n"); NIMPL }
+// @extend_spaces extends size of to-space before copying from from-space
+static void extend_spaces (int required_size) {
+  if (to_space.size < required_size){
+    int new_size = to_space.size * 2;
+    if (new_size < required_size){
+      printf("Unexpectedly large heap required\n");
+      exit(1);
+    }
+    int success = extend_pool(new_size);
+    if (!success){
+      printf("extend failed\n");
+      exit(1);
+    }
+  } else {
+    to_space.current = to_space.begin;
+  }
+}
 
 // @gc_copy takes a pointer to an object, copies it
 //   (i.e. moves from from_space to to_space)
 //   , rests a forward pointer, and returns new object location.
-extern size_t * gc_copy (size_t *obj) { NIMPL }
+extern size_t * gc_copy (size_t *obj) {
+  NIMPL
+}
 
 // @gc_test_and_copy_root checks if pointer is a root (i.e. valid heap pointer)
 //   and, if so, calls @gc_copy for each found root
@@ -506,26 +548,6 @@ extern void gc_root_scan_data (void) { NIMPL }
 // @init_pool is a memory pools initialization function
 //   (is called by L__gc_init from runtime/gc_runtime.s)
 extern void init_pool (void) {
-  init_one_pool(&from_space);
-  if (from_space.begin == MAP_FAILED){
-    printf("err! errno = %d\n", errno);
-    if (errno == EACCES){
-      printf("eaccess\n");
-    }
-    if (errno == EAGAIN){
-      printf("2\n");
-    }
-    if (errno == EBADF){
-      printf("3\n");
-    }
-    if (errno == EEXIST){
-      printf("4\n");
-    }
-    if (errno == EINVAL){
-      printf("5\n");
-    }
-    exit(1);
-  }
   int success = init_one_pool(&from_space) && init_one_pool(&to_space);
   if (!success){
     printf("Pool initialization failed\n");
@@ -542,6 +564,7 @@ int init_one_pool(pool *p){
   p->current = p->begin;
   p->size = SPACE_SIZE;
   p->end = p->begin + p->size;
+  p->current = p->begin;
   return 1;
 }
 
@@ -550,29 +573,48 @@ static int free_pool (pool * p) {
   munmap(p->begin, p->size);
 }
 
+// copy to passive, update passive's current, keep forward pointer in active
+// assume that ptrFrom points to active 
+static void* copyObject(void* ptrFrom, size_t size){
+  void* ptrTo = memcpy(to_space.current, ptrFrom, size);
+  to_space.current += size;
+  *((void**)ptrFrom) = ptrTo;
+}
+
 static void processRegion (void* ptrFrom, void* ptrTo, int depth){
   void *address;
   for (address = ptrFrom; address < ptrTo;  address += sizeof(int)){
-    printf("%0*cAt %p: ", depth, ' ', address);
+    LOG("%0*cAt %p: ", depth, ' ', address);
     int value = *((int*)address);
     if (!UNBOXED(value)){
-      data* ptr = TO_DATA(value);
-      int tag = TAG(ptr->tag);
-      printf("Pointer, tag = %d", tag);
-      if (tag == STRING_TAG){
-	printf(", str: %s\n", ptr->contents);
-      } else if (tag == ARRAY_TAG){
-	int size = LEN(ptr->tag);	
-	printf(", size: %d\n", size);
-	processRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);
-      } else if (tag == SEXP_TAG){
-	sexp* se = (sexp*)ptr;
-	int size = LEN(ptr->tag);
-	printf(", size: %d, taghash: %d\n", size, se->tag);
-	processRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);	
+      if (IS_VALID_HEAP_POINTER(value)){	
+	data* ptr = TO_DATA(value);
+	int tag = TAG(ptr->tag);
+	int blockSize;
+	LOG("Pointer, tag = %d", tag);
+	if (tag == STRING_TAG){
+	  LOG(", str: %s\n", ptr->contents);
+	  int strSize = sizeof(int)+1+strlen(ptr->contents);
+	  copyObject(ptr, strSize);
+	} else if (tag == ARRAY_TAG){
+	  int size = LEN(ptr->tag);	
+	  LOG(", size: %d\n", size);
+	  int arrSize = sizeof(int) * (size + 1);
+	  copyObject(ptr, arrSize);
+	  processRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);
+	} else if (tag == SEXP_TAG){
+	  sexp* se = TO_SEXP(value);
+	  int size = LEN(ptr->tag);
+	  LOG(", size: %d, taghash: %d\n", size, se->tag);
+	  int sexpSize = sizeof(int) * (size + 1);
+	  copyObject(se, sexpSize);
+	  processRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);	
+	}
+      } else {
+	LOG("Neither value nor pointer\n");
       }
     } else {
-      printf("Non-ptr, unboxed = %d\n", UNBOX(value));
+      LOG("Non-ptr, unboxed = %d\n", UNBOX(value));
     }
   }  
 }
@@ -586,12 +628,67 @@ static void processRegion (void* ptrFrom, void* ptrTo, int depth){
 //        and calls @gc_test_and_copy_root for each found root)
 //   2) call @__gc_root_scan_stack (finds roots in program stack
 //        and calls @gc_test_and_copy_root for each found root)
-//   3) extends spaces if there is not enough space to be allocated after gc
 /* static void * gc (size_t size) { */
 static void * gc () {
-  printf("Static data block: %p..%p\n", &__gc_data_start, &__gc_data_end);
+  LOG("Static data block: %p..%p\n", &__gc_data_start, &__gc_data_end);
   processRegion(&__gc_data_start, &__gc_data_end, 1);
+  LOG("Stack: %p..%p\n", __gc_stack_bottom, __gc_stack_top);
+  // stack bounds are set up at this moment
+  processRegion(__gc_stack_top, __gc_stack_bottom, 1);
 }
+
+static int countRegionSpace (void* ptrFrom, void* ptrTo){
+  void *address;
+  int regionSpace = 0;
+  for (address = ptrFrom; address < ptrTo;  address += sizeof(int)){
+    int value = *((int*)address);
+    if (IS_VALID_HEAP_POINTER(value)){	
+      data* ptr = TO_DATA(value);
+      int tag = TAG(ptr->tag);
+      if (tag == STRING_TAG){
+	int strSize = sizeof(int)+1+strlen(ptr->contents);
+	regionSpace += strSize;
+      } else if (tag == ARRAY_TAG){
+	int size = LEN(ptr->tag);	
+	int arrSize = sizeof(int) * (size + 1);
+	regionSpace += arrSize + countRegionSpace(ptr->contents, ptr->contents + sizeof(int)*size);
+      } else if (tag == SEXP_TAG){
+	sexp* se = TO_SEXP(value);
+	int size = LEN(ptr->tag);
+	int sexpSize = sizeof(int) * (size + 1);
+	regionSpace += sexpSize + countRegionSpace(ptr->contents, ptr->contents + sizeof(int)*size);
+      }
+    }
+  }
+  return regionSpace;
+}
+
+
+static int countActiveSpace(){
+  // may count more space than is actually used since it may account a pointer multiple times
+  int spaceUsed = 0;
+  spaceUsed += countRegionSpace(&__gc_data_start, &__gc_data_end);
+  // stack bounds are set up at this moment
+  spaceUsed += countRegionSpace(__gc_stack_top, __gc_stack_bottom);
+  return spaceUsed;
+}
+
+static int updateRegionPointers(void* ptrFrom, void* ptrTo){
+  void *address;
+  for (address = ptrFrom; address < ptrTo;  address += sizeof(int)){
+    int value = *((int*)address);
+    if (IS_FORWARD_PTR(value)){
+      *((void**)address) = value;
+    }
+  }
+}
+
+static void updatePointers(){
+  updateRegionPointers(&__gc_data_start, &__gc_data_end);
+  updateRegionPointers(__gc_stack_top, __gc_stack_bottom);
+  updateRegionPointers(to_space.begin, to_space.current);
+}
+
 
 // @alloc allocates @size memory words
 //   it enaibles garbage collection if out-of-memory,
@@ -599,13 +696,19 @@ static void * gc () {
 // returns a pointer to the allocated block of size @size
 extern void * alloc (size_t size) {
   // called by string (+cat), array, sexp
+  printf("before: %d, used: %d, needed: %d\n", from_space.size, from_space.current - from_space.begin, size);  
+  if (from_space.current + size >= from_space.end){
+    printf("Active pool space exhausted, calling gc\n");
+    int requiredSize = countActiveSpace() + size;
+    extend_spaces(requiredSize);
+    gc();
+    updatePointers();
+    gc_swap_spaces();
+  } else {
+    LOG("Successfully allocated\n");
+  }
+  printf("after: %d\n", from_space.size);
   void* address = from_space.current;
   from_space.current += size;
-  if (from_space.current >= from_space.end){
-    printf("Active pool space exhausted, calling gc\n");
-    gc();
-  } else {
-    printf("Successfully allocated\n");
-  }
   return address;
 }

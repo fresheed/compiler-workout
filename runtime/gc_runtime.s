@@ -9,6 +9,8 @@ __gc_stack_top:	        .long	0
 
 			.globl	__pre_gc
 			.globl	__post_gc
+			.globl __gc_stack_top
+			.globl __gc_stack_bottom
 			.globl	L__gc_init
 			.globl	__gc_root_scan_stack
 			.extern	init_pool
@@ -28,18 +30,24 @@ L__gc_init:		movl	%esp, __gc_stack_bottom
 // then  set @__gc_stack_top to %ebp
 // else  return
 __pre_gc:
-			call nimpl
-
+			cmpl $0, __gc_stack_top
+			jnz __pre_gc_skip
+			movl %ebp, __gc_stack_top
+__pre_gc_skip:	   	ret
+	
 // ==================================================
 // if __gc_stack_top was set by one of the callers
 // then return
 // else set __gc_stack_top to 0
 __post_gc:
-			call nimpl
-
+			cmpl %ebp, __gc_stack_top
+			jnz __post_gc_skip
+			movl $0, __gc_stack_top
+__post_gc_skip:		ret
+	
 // ==================================================
 // Scan stack for roots
 // strting from __gc_stack_top
 // till __gc_stack_bottom
-__gc_root_scan_stack:
-			call nimpl
+//__gc_root_scan_stack:
+//			call nimpl
