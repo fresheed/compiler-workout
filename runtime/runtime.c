@@ -43,6 +43,14 @@ extern void nimpl (void) { NIMPL }
 #define LOG2(...)
 #endif
 
+# define LOGGING3
+# ifdef LOGGING3
+#define LOG3(...) printf (__VA_ARGS__)
+# else
+#define LOG3(...)
+#endif
+
+
 typedef struct {
   int tag; 
   char contents[0];
@@ -54,6 +62,8 @@ typedef struct {
 } sexp; 
 
 extern void* alloc (size_t);
+
+int alloc_by;
 
 extern int Blength (void *p) {
   data *a = (data*) BOX (NULL);
@@ -178,6 +188,7 @@ extern void* Belem (void *p, int i) {
 
 extern void* Bstring (void *p) {
   __pre_gc();
+  alloc_by = 1;
   int n   = BOX(0);
   data *r = NULL;
 
@@ -188,6 +199,7 @@ extern void* Bstring (void *p) {
   strncpy (r->contents, p, n + 1);
 
   __post_gc();
+  alloc_by = 0;
   return r->contents;
 }
 
@@ -206,6 +218,7 @@ extern void* Bstringval (void *p) {
 
 extern void* Barray (int n, ...) {
   __pre_gc();
+  alloc_by = 2;
   va_list args = (va_list) BOX (NULL);
   int     i    = BOX(0),
     ai   = BOX(0);
@@ -225,11 +238,13 @@ extern void* Barray (int n, ...) {
   va_end(args);
 
   __post_gc();
+  alloc_by = 0;
   return r->contents;
 }
 
 extern void* Bsexp (int n, ...) {
   __pre_gc();
+  alloc_by = 3;
   va_list args = (va_list) BOX (NULL);
   int     i    = BOX(0);
   int     ai   = BOX(0);
@@ -256,6 +271,7 @@ extern void* Bsexp (int n, ...) {
   va_end(args);
 
   __post_gc();
+  alloc_by = 0;
   return d->contents;
 }
 
@@ -473,6 +489,7 @@ static pool   to_space;   // To-space   (passive) semi-heap
 
 // initial semi-space size
 static size_t SPACE_SIZE = 32;
+//static size_t SPACE_SIZE = 128;
 # define POOL_SIZE (2*SPACE_SIZE)
 
 // swaps active and passive spaces
@@ -518,7 +535,8 @@ static int extend_pool(int new_size){
 // @extend_spaces extends size of to-space before copying from from-space
 static void extend_spaces (int required_size) {
   if (to_space.size < required_size){
-    int new_size = to_space.size * 3;
+    int new_size = required_size;
+    /* int new_size = to_space.size * 3; */
     if (new_size < required_size){
       printf("Unexpectedly large heap required: %d, expected max %d\n", required_size, new_size);
       exit(1);
@@ -527,6 +545,8 @@ static void extend_spaces (int required_size) {
     if (!success){
       printf("extend failed\n");
       exit(1);
+    } else {
+      LOG3("Pool extended: now %p..%p\n", to_space.begin, to_space.end);
     }
   } else {
     to_space.current = to_space.begin;
@@ -564,6 +584,7 @@ static int free_pool (pool * p) {
 // copy to passive, update passive's current, keep forward pointer in active
 // assume that ptrFrom points to active 
 static void* copyObject(void* ptrFrom, size_t size){
+  LOG3("Copying %p..%p to %p..%p (size=%d)\n", ptrFrom, ptrFrom+size, to_space.current, to_space.current+size, size);
   void* ptrTo = memcpy(to_space.current, ptrFrom, size);
   to_space.current += size;
   *((void**)ptrFrom) = ptrTo;
@@ -588,14 +609,14 @@ static void processRegion (void* ptrFrom, void* ptrTo, int depth){
 	  int size = LEN(ptr->tag);	
 	  LOG1(", size: %d\n", size);
 	  int arrSize = sizeof(int) * (size + 1);
-	  copyObject(ptr, arrSize);
+	  copyObject((void*)ptr, arrSize);
 	  processRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);
 	} else if (tag == SEXP_TAG){
 	  sexp* se = TO_SEXP(value);
 	  int size = LEN(ptr->tag);
-	  LOG1(", size: %d, taghash: %d\n", size, se->tag);
+	  LOG1(", ptr->%p, size: %d, taghash: %d\n", se, size, se->tag);
 	  int sexpSize = sizeof(int) * (size + 2);
-	  copyObject(se, sexpSize);
+	  copyObject((void*)se, sexpSize);
 	  processRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);	
 	}
       } else {
@@ -604,7 +625,7 @@ static void processRegion (void* ptrFrom, void* ptrTo, int depth){
     } else {
       LOG1("Non-ptr, unboxed = %d\n", UNBOX(value));
     }
-  }  
+  }
 }
 
 // @gc performs stop-the-world mark-and-copy garbage collection
@@ -618,11 +639,13 @@ static void processRegion (void* ptrFrom, void* ptrTo, int depth){
 //        and calls @gc_test_and_copy_root for each found root)
 /* static void * gc (size_t size) { */
 static void * gc () {
+  LOG1("%%%%%%%%%%%%%%%%%%%%\n");
   LOG1("Static data block: %p..%p\n", &__gc_data_start, &__gc_data_end);
   processRegion(&__gc_data_start, &__gc_data_end, 1);
   LOG1("Stack: %p..%p\n", __gc_stack_bottom, __gc_stack_top);
   // stack bounds are set up at this moment
   processRegion(__gc_stack_top, __gc_stack_bottom, 1);
+  LOG1("====================\n");
 }
 
 static int countRegionSpace (void* ptrFrom, void* ptrTo){
@@ -673,7 +696,7 @@ static int updateRegionPointers(void* ptrFrom, void* ptrTo){
 
 static void updatePointers(){
   updateRegionPointers(&__gc_data_start, &__gc_data_end);
-  updateRegionPointers(__gc_stack_top, __gc_stack_bottom);
+  updateRegionPointers(&__gc_stack_top, &__gc_stack_bottom);
   updateRegionPointers(to_space.begin, to_space.current);
 }
 
@@ -687,6 +710,7 @@ extern void * alloc (size_t size) {
   LOG2("before: %d, used: %d, needed: %d\n", from_space.size, from_space.current - from_space.begin, size);  
   if (from_space.current + size >= from_space.end){
     LOG2("Active pool space exhausted, calling gc\n");
+    LOG3("GC called: before: %d, used: %d, needed: %d\n", from_space.size, from_space.current - from_space.begin, size);
     int requiredSize = countActiveSpace() + size;
     extend_spaces(requiredSize);
     gc();
@@ -699,4 +723,52 @@ extern void * alloc (size_t size) {
   void* address = from_space.current;
   from_space.current += size;
   return address;
+}
+
+static void describeRegion (void* ptrFrom, void* ptrTo, int depth){
+  void *address;
+  for (address = ptrFrom; address < ptrTo;  address += sizeof(int)){
+    LOG3("%0*cAt %p: ", depth, ' ', address);
+    int value = *((int*)address);
+    if (!UNBOXED(value)){
+      if (IS_VALID_HEAP_POINTER(value)){	
+	data* ptr = TO_DATA(value);
+	int tag = TAG(ptr->tag);
+	int blockSize;
+	LOG3("Pointer, tag = %d", tag);
+	if (tag == STRING_TAG){
+	  LOG3(", str: %s\n", ptr->contents);
+	  int strSize = sizeof(int)+1+strlen(ptr->contents);
+	} else if (tag == ARRAY_TAG){
+	  int size = LEN(ptr->tag);	
+	  LOG3(", size: %d\n", size);
+	  int arrSize = sizeof(int) * (size + 1);
+	  describeRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);
+	} else if (tag == SEXP_TAG){
+	  sexp* se = TO_SEXP(value);
+	  int size = LEN(ptr->tag);
+	  LOG3(", ptr->%p, size: %d, taghash: %d\n", se, size, se->tag);
+	  int sexpSize = sizeof(int) * (size + 2);
+	  describeRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);	
+	}
+      } else {
+	LOG3("Neither value nor pointer\n");
+      }
+    } else {
+      LOG3("Non-ptr, unboxed = %d\n", UNBOX(value));
+    }
+  }
+}
+
+extern void Ldescribe () {
+  __pre_gc();
+  LOG3("++++++++++++++++++++\n");
+  LOG3("Active semiheap: %p..%p, passive semiheap: %p..%p\n", from_space.begin, from_space.end, to_space.begin, to_space.end);
+  LOG3("Static data block: %p..%p\n", &__gc_data_start, &__gc_data_end);
+  describeRegion(&__gc_data_start, &__gc_data_end, 1);
+  LOG3("Stack: %p..%p\n", __gc_stack_bottom, __gc_stack_top);
+  // stack bounds are set up at this moment
+  describeRegion(__gc_stack_top, __gc_stack_bottom, 1);
+  LOG3("^^^^^^^^^^^^^^^^^^^^\n");
+  __post_gc();
 }
