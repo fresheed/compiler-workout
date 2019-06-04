@@ -43,7 +43,7 @@ extern void nimpl (void) { NIMPL }
 #define LOG2(...)
 #endif
 
-# define LOGGING3
+//# define LOGGING3
 # ifdef LOGGING3
 #define LOG3(...) printf (__VA_ARGS__)
 # else
@@ -760,15 +760,9 @@ static int updateRegionPointers(void* ptrFrom, void* ptrTo){
 }
 
 static void updatePointers(){
-  /* LOG3("urp passive...\n"); */
   updateRegionPointers(to_space.begin, to_space.current);
-  /* LOG3("data...\n"); */
   updateRegionPointers(&__gc_data_start, &__gc_data_end);
-  /* LOG3("stack ...\n");   */
   updateRegionPointers(__gc_stack_top, __gc_stack_bottom);
-  /* LOG3("finished urp..\n"); */
-  /* LOG3("urp active...\n"); */
-  /* updateRegionPointers(from_space.begin, from_space.current); */
 }
 
 
@@ -777,22 +771,15 @@ static void updatePointers(){
 //   i.e. calls @gc when @current + @size > @from_space.end
 // returns a pointer to the allocated block of size @size
 extern void * alloc (size_t size) {
-  // called by string (+cat), array, sexp
   LOG2("before: %d, used: %d, needed: %d\n", from_space.size, from_space.current - from_space.begin, size);  
   if (from_space.current + size >= from_space.end){
     LOG2("Active pool space exhausted, calling gc\n");
     LOG3("GC called: before: %d, used: %d, needed: %d\n", from_space.size, from_space.current - from_space.begin, size);
     int requiredSize = countActiveSpace() + size;
     extend_spaces(requiredSize);
-    LOG3("before gc:\n");
-    Ldescribe();
     gc();
-    LOG3("after gc:\n");
-    Ldescribe();
     updatePointers();
     gc_swap_spaces();
-    /* LOG3("after swap:\n"); */
-    /* Ldescribe(); */
   } else {
     LOG2("Successfully allocated\n");
   }
@@ -800,8 +787,6 @@ extern void * alloc (size_t size) {
   void* address = from_space.current;
   LOG3("allocating at %p, raw = %d\n", address, (int)address);
   from_space.current += size;
-  /* LOG3("after allocation:\n"); */
-  /* Ldescribe(); */
   return address;
 }
 
