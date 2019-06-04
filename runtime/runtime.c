@@ -182,8 +182,8 @@ extern void* Belem (void *p, int i) {
   if (TAG(a->tag) == STRING_TAG) {
     return (void*) BOX(a->contents[i]);
   }
-  
-  return (void*) ((int*) a->contents)[i];
+  void* result = (void*) ((int*) a->contents)[i];
+  return result;
 }
 
 extern void* Bstring (void *p) {
@@ -265,10 +265,14 @@ extern void* Bsexp (int n, ...) {
     
     p = (size_t*) ai;
     ((int*)d->contents)[i] = ai;
+
+    /* LOG3("After some Bsexp code:\n"); */
+    /* Ldescribe(); */
   }
 
   r->tag = va_arg(args, int);
   va_end(args);
+
 
   __post_gc();
   alloc_by = 0;
@@ -325,7 +329,6 @@ extern int Bstring_tag_patt (void *x) {
 
 extern int Bsexp_tag_patt (void *x) {
   if (UNBOXED(x)) return BOX(0);
-  
   return BOX(TAG(TO_DATA(x)->tag) == SEXP_TAG);
 }
 
@@ -477,9 +480,9 @@ extern void __post_gc ();
 
 /* memory semi-space */
 typedef struct {
-  size_t * begin;
-  size_t * end;
-  size_t * current;
+  void * begin;
+  void * end;
+  void * current;
   size_t   size;
 } pool;
 
@@ -503,12 +506,12 @@ static void gc_swap_spaces (void) {
 # define IS_VALID_HEAP_POINTER(p)		\
   (!UNBOXED(p) &&				\
    from_space.begin <= p &&			\
-   from_space.end   >  p)
+   from_space.end   >=  p)
 
 // checks if @p points to the passive (to-) space
 # define IN_PASSIVE_SPACE(p)			\
   (to_space.begin <= p	&&			\
-   to_space.end   >  p)
+   to_space.end   >=  p)
 
 // chekcs if @p is a forward pointer
 # define IS_FORWARD_PTR(p)			\
@@ -522,6 +525,7 @@ static void gc_swap_spaces (void) {
 static int extend_pool(int new_size){  
   int ptr = mremap(to_space.begin, to_space.size, new_size, 0);
   if (ptr == MAP_FAILED){
+    printf("Map failed for new size = %d\n", new_size);
     return 0;
   } else {
     to_space.begin = ptr;
@@ -583,11 +587,21 @@ static int free_pool (pool * p) {
 
 // copy to passive, update passive's current, keep forward pointer in active
 // assume that ptrFrom points to active 
-static void* copyObject(void* ptrFrom, size_t size){
-  LOG3("Copying %p..%p to %p..%p (size=%d)\n", ptrFrom, ptrFrom+size, to_space.current, to_space.current+size, size);
-  void* ptrTo = memcpy(to_space.current, ptrFrom, size);
-  to_space.current += size;
-  *((void**)ptrFrom) = ptrTo;
+static void* copyObject(void* ptrFrom, size_t size, size_t fpShift){
+  void* target = to_space.current;
+  int curValue = *(int*)ptrFrom;
+  if (IS_FORWARD_PTR(curValue)){
+    LOG3("Copying forward pointer from %p\n", ptrFrom);
+    memcpy(target, ptrFrom, 1*sizeof(int));
+    to_space.current += 1*sizeof(int);
+  } else {
+    LOG3("Copying %p..%p to %p..%p (size=%d)\n", ptrFrom, ptrFrom+size, target, target+size, size);
+    void* ptrTo = memcpy(target, ptrFrom, size);
+    to_space.current += size;
+    //*((void**)(ptrFrom+fpShift)) = ptrTo+fpShift;
+    *((void**)(ptrFrom)) = ptrTo + fpShift;
+  }
+  
 }
 
 static void processRegion (void* ptrFrom, void* ptrTo, int depth){
@@ -604,20 +618,23 @@ static void processRegion (void* ptrFrom, void* ptrTo, int depth){
 	if (tag == STRING_TAG){
 	  LOG1(", str: %s\n", ptr->contents);
 	  int strSize = sizeof(int)+1+strlen(ptr->contents);
-	  copyObject(ptr, strSize);
+	  copyObject(ptr, strSize, 1*sizeof(int));
 	} else if (tag == ARRAY_TAG){
 	  int size = LEN(ptr->tag);	
 	  LOG1(", size: %d\n", size);
 	  int arrSize = sizeof(int) * (size + 1);
-	  copyObject((void*)ptr, arrSize);
+	  copyObject((void*)ptr, arrSize, 1*sizeof(int));
 	  processRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);
 	} else if (tag == SEXP_TAG){
 	  sexp* se = TO_SEXP(value);
 	  int size = LEN(ptr->tag);
 	  LOG1(", ptr->%p, size: %d, taghash: %d\n", se, size, se->tag);
 	  int sexpSize = sizeof(int) * (size + 2);
-	  copyObject((void*)se, sexpSize);
-	  processRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);	
+	  LOG3("will copy sexp of size %d from %p\n", size, (void*)se);
+	  copyObject((void*)se, sexpSize, 2*sizeof(int));
+	  LOG3("after copying sexp from %p:\n", (void*)se);
+	  Ldescribe();
+	  processRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);
 	}
       } else {
 	LOG1("Neither value nor pointer\n");
@@ -648,9 +665,12 @@ static void * gc () {
   LOG1("====================\n");
 }
 
-static int countRegionSpace (void* ptrFrom, void* ptrTo){
+static int countRegionSpace (void* ptrFrom, void* ptrTo, int depth){
   void *address;
   int regionSpace = 0;
+  /* if (depth <= 3){ */
+  /*   LOG3("%0*cCounting space at %p..%p\n", depth, ' ', ptrFrom, ptrTo); */
+  /* } */
   for (address = ptrFrom; address < ptrTo;  address += sizeof(int)){
     int value = *((int*)address);
     if (IS_VALID_HEAP_POINTER(value)){	
@@ -662,12 +682,12 @@ static int countRegionSpace (void* ptrFrom, void* ptrTo){
       } else if (tag == ARRAY_TAG){
 	int size = LEN(ptr->tag);	
 	int arrSize = sizeof(int) * (size + 1);
-	regionSpace += arrSize + countRegionSpace(ptr->contents, ptr->contents + sizeof(int)*size);
+	regionSpace += arrSize + countRegionSpace(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);
       } else if (tag == SEXP_TAG){
 	sexp* se = TO_SEXP(value);
 	int size = LEN(ptr->tag);
 	int sexpSize = sizeof(int) * (size + 2);
-	regionSpace += sexpSize + countRegionSpace(ptr->contents, ptr->contents + sizeof(int)*size);
+	regionSpace += sexpSize + countRegionSpace(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);
       }
     }
   }
@@ -678,26 +698,77 @@ static int countRegionSpace (void* ptrFrom, void* ptrTo){
 static int countActiveSpace(){
   // may count more space than is actually used since it may account a pointer multiple times
   int spaceUsed = 0;
-  spaceUsed += countRegionSpace(&__gc_data_start, &__gc_data_end);
+  spaceUsed += countRegionSpace(&__gc_data_start, &__gc_data_end, 1);
   // stack bounds are set up at this moment
-  spaceUsed += countRegionSpace(__gc_stack_top, __gc_stack_bottom);
+  spaceUsed += countRegionSpace(__gc_stack_top, __gc_stack_bottom, 1);
   return spaceUsed;
 }
 
 static int updateRegionPointers(void* ptrFrom, void* ptrTo){
+  /* LOG3("  updating in %p..%p\n", ptrFrom, ptrTo);   */
   void *address;
   for (address = ptrFrom; address < ptrTo;  address += sizeof(int)){
     int value = *((int*)address);
-    if (IS_FORWARD_PTR(value)){
-      *((void**)address) = value;
+    if (IS_VALID_HEAP_POINTER(value)){
+      void* possibleFpr = ((void*)value) - 1*sizeof(int);
+      int ptr = *(int*)possibleFpr;
+      if (IS_FORWARD_PTR(ptr)){
+	*(int*)address = ptr;
+      } else {
+	possibleFpr -= 1*sizeof(int);
+	ptr = *(int*)possibleFpr;
+	if (IS_FORWARD_PTR(ptr)){
+	  *(int*)address = ptr;
+	}
+      }
     }
+
+    /* int value = *((int*)address); */
+    /* while (IS_VALID_HEAP_POINTER(value)){ */
+    /*   value = *((int*)value); */
+    /* } */
+    /* if (IS_FORWARD_PTR(value)){ */
+    /*   int nextValue = *((int*)value); */
+    /*   while (IS_FORWARD_PTR(nextValue)){ */
+    /* 	value = nextValue; */
+    /* 	nextValue = *((int*)value); */
+    /* 	if (nextValue == value){ */
+    /* 	  break; */
+    /* 	} */
+    /*   } */
+    /*   //LOG3("Found FP at %p\n", address); */
+    /*   *(int*)address = value; */
+    /* } else { */
+    /*   //LOG3("Found ? at %p\n", address); */
+    /* } */
+
+
+    
+    /* int value = address; */
+    /* int nextValue = *((int*)value); */
+    /* while (IS_VALID_HEAP_POINTER(nextValue) || IS_FORWARD_PTR(nextValue)){ */
+    /*   value = nextValue; */
+    /*   nextValue = *((int*)value); */
+    /* } */
+    /* if (IS_FORWARD_PTR(value)){ */
+    /*   //LOG3("Found FP at %p\n", address); */
+    /*   *(int*)address = value; */
+    /* } else { */
+    /*   //LOG3("Found ? at %p\n", address); */
+    /* } */
   }
 }
 
 static void updatePointers(){
-  updateRegionPointers(&__gc_data_start, &__gc_data_end);
-  updateRegionPointers(&__gc_stack_top, &__gc_stack_bottom);
+  /* LOG3("urp passive...\n"); */
   updateRegionPointers(to_space.begin, to_space.current);
+  /* LOG3("data...\n"); */
+  updateRegionPointers(&__gc_data_start, &__gc_data_end);
+  /* LOG3("stack ...\n");   */
+  updateRegionPointers(__gc_stack_top, __gc_stack_bottom);
+  /* LOG3("finished urp..\n"); */
+  /* LOG3("urp active...\n"); */
+  /* updateRegionPointers(from_space.begin, from_space.current); */
 }
 
 
@@ -713,62 +784,62 @@ extern void * alloc (size_t size) {
     LOG3("GC called: before: %d, used: %d, needed: %d\n", from_space.size, from_space.current - from_space.begin, size);
     int requiredSize = countActiveSpace() + size;
     extend_spaces(requiredSize);
+    LOG3("before gc:\n");
+    Ldescribe();
     gc();
+    LOG3("after gc:\n");
+    Ldescribe();
     updatePointers();
     gc_swap_spaces();
+    /* LOG3("after swap:\n"); */
+    /* Ldescribe(); */
   } else {
     LOG2("Successfully allocated\n");
   }
   LOG2("after: %d\n", from_space.size);
   void* address = from_space.current;
+  LOG3("allocating at %p, raw = %d\n", address, (int)address);
   from_space.current += size;
+  /* LOG3("after allocation:\n"); */
+  /* Ldescribe(); */
   return address;
 }
 
 static void describeRegion (void* ptrFrom, void* ptrTo, int depth){
-  void *address;
-  for (address = ptrFrom; address < ptrTo;  address += sizeof(int)){
-    LOG3("%0*cAt %p: ", depth, ' ', address);
+  void *address = ptrFrom;
+  for (address = ptrFrom; address < ptrTo; address += sizeof(int)){
+    LOG3("@ %p, ", address);
     int value = *((int*)address);
     if (!UNBOXED(value)){
-      if (IS_VALID_HEAP_POINTER(value)){	
-	data* ptr = TO_DATA(value);
-	int tag = TAG(ptr->tag);
-	int blockSize;
-	LOG3("Pointer, tag = %d", tag);
-	if (tag == STRING_TAG){
-	  LOG3(", str: %s\n", ptr->contents);
-	  int strSize = sizeof(int)+1+strlen(ptr->contents);
-	} else if (tag == ARRAY_TAG){
-	  int size = LEN(ptr->tag);	
-	  LOG3(", size: %d\n", size);
-	  int arrSize = sizeof(int) * (size + 1);
-	  describeRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);
-	} else if (tag == SEXP_TAG){
-	  sexp* se = TO_SEXP(value);
-	  int size = LEN(ptr->tag);
-	  LOG3(", ptr->%p, size: %d, taghash: %d\n", se, size, se->tag);
-	  int sexpSize = sizeof(int) * (size + 2);
-	  describeRegion(ptr->contents, ptr->contents + sizeof(int)*size, depth+1);	
-	}
+      void* ptr = (void*)value;
+      if (IS_VALID_HEAP_POINTER(ptr)){
+	LOG3("Pointer to %p\n", ptr);
+      } else if (IS_FORWARD_PTR(ptr)){
+	LOG3("FP to %p\n", ptr);
       } else {
-	LOG3("Neither value nor pointer\n");
+	LOG3("?; raw = %d\n", value);
       }
     } else {
-      LOG3("Non-ptr, unboxed = %d\n", UNBOX(value));
+      LOG3("Non-ptr, raw = %d, unboxed = %d\n", value, UNBOX(value));
     }
   }
 }
 
+
 extern void Ldescribe () {
+  static int counter;
   __pre_gc();
-  LOG3("++++++++++++++++++++\n");
+  LOG3("++++++++++++++++++++ %d\n", counter);
   LOG3("Active semiheap: %p..%p, passive semiheap: %p..%p\n", from_space.begin, from_space.end, to_space.begin, to_space.end);
   LOG3("Static data block: %p..%p\n", &__gc_data_start, &__gc_data_end);
   describeRegion(&__gc_data_start, &__gc_data_end, 1);
   LOG3("Stack: %p..%p\n", __gc_stack_bottom, __gc_stack_top);
   // stack bounds are set up at this moment
   describeRegion(__gc_stack_top, __gc_stack_bottom, 1);
-  LOG3("^^^^^^^^^^^^^^^^^^^^\n");
+  LOG3("Active semiheap:\n", from_space.begin, from_space.current);
+  describeRegion(from_space.begin, from_space.current, 1);
+  LOG3("Passive semiheap:\n", to_space.begin, to_space.current);
+  describeRegion(to_space.begin, to_space.current, 1);
+  LOG3("^^^^^^^^^^^^^^^^^^^^ %d\n", counter++);
   __post_gc();
 }
