@@ -23,7 +23,8 @@ let main =
     let to_compile = not (interpret || stack) in
     let infile     = Sys.argv.(if not to_compile then 2 else 1) in
     match parse infile with
-    | `Ok prog ->
+    | `Ok prog_orig ->
+      let prog = Optimizer.optimize prog_orig in
       if to_compile
       then 
         let basename = Filename.chop_suffix infile ".expr" in

@@ -1,0 +1,18 @@
+read (a);
+read (b);
+
+if (a > b)
+  then z := a - b
+  else z := b - a
+fi;
+
+u := a - b;
+
+t := a * b;
+
+if (a > b)
+  then w := a - b; y := b + a
+  else w := b - a; y := b + a
+fi;
+
+write (1)
