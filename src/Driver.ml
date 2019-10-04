@@ -20,11 +20,11 @@ let main =
   try
     let interpret  = Sys.argv.(1) = "-i"  in
     let stack      = Sys.argv.(1) = "-s"  in
-    let to_compile = not (interpret || stack) in
+    let optimize = Sys.argv.(1) = "-o" in
+    let to_compile = not (interpret || stack || optimize) in
     let infile     = Sys.argv.(if not to_compile then 2 else 1) in
     match parse infile with
-    | `Ok prog_orig ->
-      let prog = Optimizer.optimize prog_orig in
+    | `Ok prog ->
       if to_compile
       then 
         let basename = Filename.chop_suffix infile ".expr" in
@@ -38,10 +38,12 @@ let main =
           with End_of_file -> acc
 	in
 	let input = read [] in	
-	let output = 
-	  if interpret 
-	  then Language.eval prog input 
-	  else SM.run (SM.compile prog) input
+	let output =
+	  if optimize
+	  then let prog = Optimizer.optimize prog in Language.eval prog input
+	  else if interpret
+	    then Language.eval prog input
+	    else SM.run (SM.compile prog) input
 	in
 	List.iter (fun i -> Printf.printf "%d\n" i) output
     | `Fail er -> Printf.eprintf "Syntax error: %s\n" er

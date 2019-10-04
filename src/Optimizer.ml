@@ -234,7 +234,6 @@ module AE = struct
       let rec ae_entry label = let stmt = by_label label in
                                if (label == get_init_label prog) then SetExpr.empty
                                else let preds_labels = get_predecessors prog label in
-                               (if label == 14 then Printf.eprintf "[%s]" (show_list_labels preds_labels));
                                map_build_set (SetExpr.empty) (SetExpr.inter) ae_exit (SetInt.elements preds_labels)
           and ae_exit label = let stmt = by_label label
                               in SetExpr.union (SetExpr.diff (ae_entry label) (kills stmt)) (gens stmt)
@@ -245,9 +244,8 @@ end
 
 let describe analyzer prog label =
   let on_entry, on_exit = analyzer prog in
-  Printf.sprintf "On entry: %s # On exit: %s # preds: %s"
+  Printf.sprintf "On entry: %s # On exit: %s"
                  (show_list (on_entry label)) (show_list (on_exit label))
-                 (show_list_labels (AnalysisGeneral.get_predecessors prog label))
 
 
 let optimize orig_prog =
