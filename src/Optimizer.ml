@@ -24,7 +24,9 @@ let rec show_expr expr = match expr with
 | Expr.Binop (op, e1, e2) -> Printf.sprintf "(%s)%s(%s)" (show_expr e1) op (show_expr e2)
 
 let show_list set = (String.concat ", " (List.map show_expr (SetExpr.elements set)))
-let show_list_labels set = (String.concat ", " (List.map string_of_int (SetInt.elements set)))
+(*let show_list_labels set = (String.concat ", " (List.map string_of_int (SetInt.elements set)))*)
+let show_list_labels lst = (String.concat ", " (List.map string_of_int lst))
+let show_flow flow = (String.concat ", " (List.map (fun (x, y) -> Printf.sprintf "%d->%d" x y) flow))
 
 
 module ExtStmt =  struct
@@ -164,27 +166,73 @@ module AnalysisGeneral = struct
     let get_predecessors prog label = let edges = SetInt2.filter (fun (_, l_to) -> l_to == label) (get_flow prog) in
                                       SetInt.of_list (List.map fst (SetInt2.elements edges))
 
-end
-
-module VB = struct
-    open AnalysisGeneral
-    open ExtStmt
-    let analyze_vb prog =
-      (* list of killed (sub)expressions *)
-      let prog_finish_labels = get_finish_labels prog in
-      let is_finish stmt = (SetInt.mem (get_label stmt) prog_finish_labels) in
-      let depend_on x = map_build_set (SetExpr.empty) (SetExpr.union) (get_dependent_subexprs x) (SetExpr.elements (prog_exprs prog)) in
-      let kills stmt = match stmt with
+    let depend_on x prog = map_build_set (SetExpr.empty) (SetExpr.union) (get_dependent_subexprs x) (SetExpr.elements (prog_exprs prog))
+    
+    let kills stmt prog = match stmt with
         | ExtSeq _ -> failwith ("Should not be called on seq statements")
         | ExtIf _ -> SetExpr.empty
         | ExtWhile _ -> SetExpr.empty
         | ExtRepeatUntil _ -> SetExpr.empty
-        | ExtRead (_, x) -> depend_on x
+        | ExtRead (_, x) -> depend_on x prog
         | ExtWrite _ -> SetExpr.empty
-        | ExtAssign (_, x, _) -> depend_on x
-        | ExtSkip _ -> SetExpr.empty in
-      (* list of generated (sub)expressions *)
-      let gens stmt = match stmt with
+        | ExtAssign (_, x, _) -> depend_on x prog
+        | ExtSkip _ -> SetExpr.empty
+
+end
+
+module Solver = struct
+  open ExtStmt
+  open AnalysisGeneral
+  let solve (flow: (int * int) list) join_fun leq_fun transfer_fun border_labels border_value unit_value =
+    let labels = List.flatten (List.map (fun (x, y) -> [x; y]) flow) in
+
+    let get_successors_edges label = List.filter (fun (l_from, _) -> l_from == label) flow in
+
+    let iterate (edges, cur_results) = match edges with
+      | [] -> (edges, cur_results)
+      | (label_from, label_to) :: rest ->
+        let new_result = transfer_fun label_from (cur_results label_from) in
+        let old_target_result = cur_results label_to in
+        if (not (leq_fun new_result old_target_result))
+        then
+          let new_target_result = join_fun [old_target_result; new_result] in
+          let new_results = Expr.update label_to new_target_result cur_results in
+          let new_edges = (get_successors_edges label_to) @ rest in
+          WRONG SUCCESSORS 
+          (new_edges, new_results)
+        else
+          (edges, cur_results) in
+
+    (*let states_equal (edges1, analysis1) (edges2, analysis2) = (List.)
+*)
+    let rec iterate_until_convergence state = Printf.eprintf "edges: %s" (show_flow (fst state));
+                                              let (new_edges, new_analysis as new_state) = iterate state in
+                                              if (new_edges == [])
+                                              then state else (iterate_until_convergence new_state) in
+
+    let set_initial_result label = if (List.mem label border_labels) then border_value else unit_value in
+    let initial_results = List.fold_left (fun cur_fun lbl -> Expr.update lbl (set_initial_result lbl) cur_fun)
+                                         (fun lbl -> unit_value) labels in
+
+    let (_, analysis_entry) = iterate_until_convergence (flow, initial_results) in
+    let analysis_exit label = transfer_fun label (analysis_entry label) in
+    (analysis_entry, analysis_exit)
+
+end
+
+module VB' = struct
+    open AnalysisGeneral
+    open ExtStmt
+    open Solver
+
+    let reverse flow = List.map (fun (x, y) -> (y, x)) flow
+
+    let inter_unit prog = prog_exprs prog
+    let inter_join prog (sets: 'SetExpr list) = List.fold_left (fun acc set -> SetExpr.inter acc set) (inter_unit prog) sets
+    let inter_leq_reversed x y = SetExpr.subset y x (* whole set is the smallest one*)
+
+    let vb_kills prog (label: int) = kills (get_by_label prog label) prog
+    let vb_gens prog (label: int) = match (get_by_label prog label) with
         | ExtSeq _ -> failwith ("Should not be called on seq statements")
         | ExtIf (_, cond, _, _) -> get_all_subexprs cond
         | ExtWhile (_, cond, _) -> get_all_subexprs cond
@@ -192,65 +240,38 @@ module VB = struct
         | ExtRead (_, x) -> SetExpr.empty
         | ExtWrite (_, e) -> get_all_subexprs e
         | ExtAssign (_, _, e) -> get_all_subexprs e
-        | ExtSkip _ -> SetExpr.empty in
-      let by_label = get_by_label prog in
-      let rec vb_entry label = let stmt = by_label label
-                               in SetExpr.union (SetExpr.diff (vb_exit label) (kills stmt)) (gens stmt)
-          and vb_exit label = let stmt = by_label label
-                              in if (is_finish stmt) then SetExpr.empty
-                                 else let succs_labels = get_successors prog label in
-                                 map_build_set (SetExpr.empty) (SetExpr.inter) vb_entry (SetInt.elements succs_labels) in
-      (vb_entry, vb_exit)
-end
+        | ExtSkip _ -> SetExpr.empty
 
-module AE = struct
-    open AnalysisGeneral
-    open ExtStmt
-    let analyze_ae prog =
-      (* list of killed (sub)expressions *)
-      let prog_finish_labels = get_finish_labels prog in
-      let is_finish stmt = (SetInt.mem (get_label stmt) prog_finish_labels) in
-      let depend_on x = map_build_set (SetExpr.empty) (SetExpr.union) (get_dependent_subexprs x) (SetExpr.elements (prog_exprs prog)) in
-      let kills stmt = match stmt with
-        | ExtSeq _ -> failwith ("Should not be called on seq statements")
-        | ExtIf _ -> SetExpr.empty
-        | ExtWhile _ -> SetExpr.empty
-        | ExtRepeatUntil _ -> SetExpr.empty
-        | ExtRead (_, x) -> depend_on x
-        | ExtWrite _ -> SetExpr.empty
-        | ExtAssign (_, x, _) -> depend_on x
-        | ExtSkip _ -> SetExpr.empty in
-      (* list of generated (sub)expressions *)
-      let gens stmt = match stmt with
-        | ExtSeq _ -> failwith ("Should not be called on seq statements")
-        | ExtIf (_, cond, _, _) -> get_all_subexprs cond
-        | ExtWhile (_, cond, _) -> get_all_subexprs cond
-        | ExtRepeatUntil (_, cond, _) -> get_all_subexprs cond
-        | ExtRead (_, x) -> SetExpr.empty
-        | ExtWrite (_, e) -> get_all_subexprs e
-        | ExtAssign (_, x, e) -> SetExpr.diff (get_all_subexprs e) (depend_on x)
-        | ExtSkip _ -> SetExpr.empty in
-      let by_label = get_by_label prog in
-      let rec ae_entry label = let stmt = by_label label in
-                               if (label == get_init_label prog) then SetExpr.empty
-                               else let preds_labels = get_predecessors prog label in
-                               map_build_set (SetExpr.empty) (SetExpr.inter) ae_exit (SetInt.elements preds_labels)
-          and ae_exit label = let stmt = by_label label
-                              in SetExpr.union (SetExpr.diff (ae_entry label) (kills stmt)) (gens stmt)
+    let vb_transfer prog label exprs = SetExpr.union (SetExpr.diff exprs (vb_kills prog label)) (vb_gens prog label)
 
-      in (ae_entry, ae_exit)
+    let vb_solver prog = solve (reverse (SetInt2.elements (get_flow prog))) (inter_join prog) inter_leq_reversed
+                               (vb_transfer prog) (SetInt.elements (get_finish_labels prog)) (SetExpr.empty) (inter_unit prog)
 end
 
 
-let describe analyzer prog label =
-  let on_entry, on_exit = analyzer prog in
-  Printf.sprintf "On entry: %s # On exit: %s"
-                 (show_list (on_entry label)) (show_list (on_exit label))
+
+(*module PRE = struct*)
+(*    open AnalysisGeneral*)
+(*    open ExtStmt*)
+
+(*    let (vb_entry, _) = VB.analyze_vb prog in*)
+(*    let (_, ae_exit) = AE.analyze_ae prog in*)
+(*    let downsafe label =  vb_entry label in*)
+(*    let upsafe label = ae_exit label in*)
+(*    let cannot_use label = kills (get_by_label prog label) prog || (! ())*)
+
+(*    let earliest prog expr label = downsafe label &&*)
+(*end*)
+
+let describe analyzer label =
+  let on_entry, on_exit = analyzer in
+  Printf.sprintf "On entry: %s # On exit: %s" (show_list (on_entry label)) (show_list (on_exit label))
 
 
 let optimize orig_prog =
   let prog = ExtStmt.enhance orig_prog in
-  (*Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe VB.analyze_vb prog lbl));*)
-  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe AE.analyze_ae prog lbl));
+  let vb_analyzer = VB'.vb_solver prog in
+  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe vb_analyzer lbl));
+  (*Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe AE.analyze_ae prog lbl));*)
   orig_prog
 
