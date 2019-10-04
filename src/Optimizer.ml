@@ -69,10 +69,10 @@ module ExtStmt =  struct
                                      shift (show_expr cond) shift (show_ s1 next) shift (show_ s2 next) shift
         | ExtWhile (i, cond, s) -> Printf.sprintf "%swhile (%s)\n%s\n" shift (show_expr cond) (show_ s next)
         | ExtRepeatUntil (i, cond, s) -> Printf.sprintf "%srepeat\n%s\n%suntil (%s)" shift (show_ s next) shift (show_expr cond)
-        | ExtRead (_, x) -> Printf.sprintf "read (%s)" x
-        | ExtWrite (_, e) -> Printf.sprintf "write (%s)" (show_expr e)
-        | ExtAssign (_, x, e) -> Printf.sprintf "%s := %s" x (show_expr e)
-        | ExtSkip _ -> "// skip") in
+        | ExtRead (_, x) -> Printf.sprintf "%sread (%s)" shift x
+        | ExtWrite (_, e) -> Printf.sprintf "%swrite (%s)" shift (show_expr e)
+        | ExtAssign (_, x, e) -> Printf.sprintf "%s%s := %s" shift x (show_expr e)
+        | ExtSkip _ -> Printf.sprintf "%s// skip" shift) in
 
         let print_ext stmt  = (match stmt with
           | ExtSeq _ as es -> describe es
@@ -94,7 +94,7 @@ module AnalysisGeneral = struct
     let rec get_finish_labels estmt = match estmt with
       | ExtSeq (i, s1, s2) -> get_finish_labels s2
       | ExtIf (i, cond, s1, s2) -> SetInt.union (get_finish_labels s1) (get_finish_labels s2)
-      | ExtWhile (i, cond, s) -> get_finish_labels s
+      | ExtWhile (i, cond, s) -> SetInt.singleton i
       | ExtRepeatUntil (i, cond, s) -> SetInt.singleton i
       | es -> SetInt.singleton (get_label es)
 
