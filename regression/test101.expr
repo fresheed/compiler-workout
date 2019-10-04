@@ -11,7 +11,7 @@ u := a - b;
 t := a * b;
 
 if (a > b)
-  then w := a - b; y := b + a
+  then a := a - b; y := b + a
   else w := b - a; y := 3 * (b + a)
 fi;
 
