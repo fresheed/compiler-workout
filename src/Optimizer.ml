@@ -197,18 +197,16 @@ module Solver = struct
         then
           let new_target_result = join_fun [old_target_result; new_result] in
           let new_results = Expr.update label_to new_target_result cur_results in
+          Printf.eprintf "Looking for successors of %d" label_to;                     
           let new_edges = (get_successors_edges label_to) @ rest in
-          WRONG SUCCESSORS 
           (new_edges, new_results)
         else
-          (edges, cur_results) in
+          (rest, cur_results) in
 
-    (*let states_equal (edges1, analysis1) (edges2, analysis2) = (List.)
-*)
-    let rec iterate_until_convergence state = Printf.eprintf "edges: %s" (show_flow (fst state));
-                                              let (new_edges, new_analysis as new_state) = iterate state in
-                                              if (new_edges == [])
-                                              then state else (iterate_until_convergence new_state) in
+    let rec iterate_until_convergence state =
+        let (new_edges, new_analysis as new_state) = iterate state in
+        (if (new_edges == [])
+        then state else (iterate_until_convergence new_state)) in
 
     let set_initial_result label = if (List.mem label border_labels) then border_value else unit_value in
     let initial_results = List.fold_left (fun cur_fun lbl -> Expr.update lbl (set_initial_result lbl) cur_fun)
@@ -270,8 +268,8 @@ let describe analyzer label =
 
 let optimize orig_prog =
   let prog = ExtStmt.enhance orig_prog in
-  let vb_analyzer = VB'.vb_solver prog in
-  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe vb_analyzer lbl));
+  let (vb_exit, vb_entry) = VB'.vb_solver prog in
+  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe (vb_entry, vb_exit) lbl));
   (*Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe AE.analyze_ae prog lbl));*)
   orig_prog
 
