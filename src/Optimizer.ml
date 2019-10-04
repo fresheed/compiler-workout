@@ -14,7 +14,7 @@ end
 module SetInt2 = Set.Make(Int2')
 module Expr' = struct
   type t = Expr.t
-  let compare x y = if (Pervasives.compare x y != 0) then 1 else 0
+  let compare x y = Pervasives.compare x y
 end
 module SetExpr = Set.Make(Expr')
 
@@ -22,6 +22,10 @@ let rec show_expr expr = match expr with
 | Expr.Const i -> Printf.sprintf "%d" i
 | Expr.Var x -> x
 | Expr.Binop (op, e1, e2) -> Printf.sprintf "(%s)%s(%s)" (show_expr e1) op (show_expr e2)
+
+let show_list set = (String.concat ", " (List.map show_expr (SetExpr.elements set)))
+let show_list_labels set = (String.concat ", " (List.map string_of_int (SetInt.elements set)))
+
 
 module ExtStmt =  struct
     @type t =
@@ -109,7 +113,7 @@ module AnalysisGeneral = struct
 
     let rec get_dependent_subexprs var expr = match expr with
       | Expr.Const _ -> SetExpr.empty
-      | Expr.Var v as cur  -> if (v == var) then SetExpr.singleton cur else SetExpr.empty
+      | Expr.Var v as cur  -> if (String.equal v var) then SetExpr.singleton cur else SetExpr.empty
       | Expr.Binop (_, e1, e2) as cur -> let subs = SetExpr.union (get_dependent_subexprs var e1) (get_dependent_subexprs var e2)
                                          in if (SetExpr.is_empty subs) then SetExpr.empty else SetExpr.add cur subs
 
@@ -133,9 +137,10 @@ module AnalysisGeneral = struct
       in stmt_exrs prog
 
     let map_build_set emp jn mapper args_list = let results = List.map mapper args_list in
-                                    (match results with
+                                    let joined = (match results with
                                     | [] -> emp
-                                    | h :: rest -> List.fold_left (fun acc set -> jn acc set) h rest)
+                                    | h :: rest -> List.fold_left (fun acc set -> jn acc set) h rest) in
+                                    joined
 
 
     let get_by_label prog label =
@@ -154,7 +159,11 @@ module AnalysisGeneral = struct
       force_get (find_by_label label prog)
 
     let get_successors prog label = let edges = SetInt2.filter (fun (l_from, _) -> l_from == label) (get_flow prog) in
-                                     SetInt.of_list (List.map snd (SetInt2.elements edges))
+                                    SetInt.of_list (List.map snd (SetInt2.elements edges))
+                                    
+    let get_predecessors prog label = let edges = SetInt2.filter (fun (_, l_to) -> l_to == label) (get_flow prog) in
+                                      SetInt.of_list (List.map fst (SetInt2.elements edges))
+
 end
 
 module VB = struct
@@ -189,23 +198,61 @@ module VB = struct
                                in SetExpr.union (SetExpr.diff (vb_exit label) (kills stmt)) (gens stmt)
           and vb_exit label = let stmt = by_label label
                               in if (is_finish stmt) then SetExpr.empty
-                                 else let preds_labels = get_successors prog label in
-                                 map_build_set (SetExpr.empty) (SetExpr.inter) vb_entry (SetInt.elements preds_labels) in
+                                 else let succs_labels = get_successors prog label in
+                                 map_build_set (SetExpr.empty) (SetExpr.inter) vb_entry (SetInt.elements succs_labels) in
       (vb_entry, vb_exit)
 end
 
+module AE = struct
+    open AnalysisGeneral
+    open ExtStmt
+    let analyze_ae prog =
+      (* list of killed (sub)expressions *)
+      let prog_finish_labels = get_finish_labels prog in
+      let is_finish stmt = (SetInt.mem (get_label stmt) prog_finish_labels) in
+      let depend_on x = map_build_set (SetExpr.empty) (SetExpr.union) (get_dependent_subexprs x) (SetExpr.elements (prog_exprs prog)) in
+      let kills stmt = match stmt with
+        | ExtSeq _ -> failwith ("Should not be called on seq statements")
+        | ExtIf _ -> SetExpr.empty
+        | ExtWhile _ -> SetExpr.empty
+        | ExtRepeatUntil _ -> SetExpr.empty
+        | ExtRead (_, x) -> depend_on x
+        | ExtWrite _ -> SetExpr.empty
+        | ExtAssign (_, x, _) -> depend_on x
+        | ExtSkip _ -> SetExpr.empty in
+      (* list of generated (sub)expressions *)
+      let gens stmt = match stmt with
+        | ExtSeq _ -> failwith ("Should not be called on seq statements")
+        | ExtIf (_, cond, _, _) -> get_all_subexprs cond
+        | ExtWhile (_, cond, _) -> get_all_subexprs cond
+        | ExtRepeatUntil (_, cond, _) -> get_all_subexprs cond
+        | ExtRead (_, x) -> SetExpr.empty
+        | ExtWrite (_, e) -> get_all_subexprs e
+        | ExtAssign (_, x, e) -> SetExpr.diff (get_all_subexprs e) (depend_on x)
+        | ExtSkip _ -> SetExpr.empty in
+      let by_label = get_by_label prog in
+      let rec ae_entry label = let stmt = by_label label in
+                               if (label == get_init_label prog) then SetExpr.empty
+                               else let preds_labels = get_predecessors prog label in
+                               (if label == 14 then Printf.eprintf "[%s]" (show_list_labels preds_labels));
+                               map_build_set (SetExpr.empty) (SetExpr.inter) ae_exit (SetInt.elements preds_labels)
+          and ae_exit label = let stmt = by_label label
+                              in SetExpr.union (SetExpr.diff (ae_entry label) (kills stmt)) (gens stmt)
 
-let describe_vb prog label =
-  let on_entry, on_exit = VB.analyze_vb prog in
-  let show_list set = (String.concat ", " (List.map show_expr (SetExpr.elements set))) in
-  Printf.sprintf "On entry: %s # On exit: %s"
+      in (ae_entry, ae_exit)
+end
+
+
+let describe analyzer prog label =
+  let on_entry, on_exit = analyzer prog in
+  Printf.sprintf "On entry: %s # On exit: %s # preds: %s"
                  (show_list (on_entry label)) (show_list (on_exit label))
+                 (show_list_labels (AnalysisGeneral.get_predecessors prog label))
 
 
 let optimize orig_prog =
   let prog = ExtStmt.enhance orig_prog in
-  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe_vb prog lbl));
-
-  (*List.iter (fun i -> Printf.printf "%s\n\!" (show(insn) i))*)
+  (*Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe VB.analyze_vb prog lbl));*)
+  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe AE.analyze_ae prog lbl));
   orig_prog
 
