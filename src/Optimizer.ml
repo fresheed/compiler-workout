@@ -100,18 +100,18 @@ module AnalysisGeneral = struct
 
     let map_to_pairs mapper set_singles = SetInt2.of_list (List.map mapper (SetInt.elements set_singles))
 
-    let rec get_flow stmt = match stmt with
-      | ExtSeq (i, s1, s2) -> SetInt2.union (SetInt2.union (get_flow s1) (get_flow s2))
-                              (let init2 = get_init_label s2 in
-                               map_to_pairs (fun x -> (x, init2)) (get_finish_labels s1))
-      | ExtIf (i, cond, s1, s2) -> SetInt2.add (i, get_init_label s2)
-                                           (SetInt2.add (i, get_init_label s1) (SetInt2.union (get_flow s1) (get_flow s2)))
+    let rec get_flow stmt =
+      let (union, add, empty) = (SetInt2.union, SetInt2.add, SetInt2.empty) in
+      match stmt with
+      | ExtSeq (i, s1, s2) -> union (union (get_flow s1) (get_flow s2))
+                              (let init2 = get_init_label s2 in map_to_pairs (fun x -> (x, init2)) (get_finish_labels s1))
+      | ExtIf (i, cond, s1, s2) -> add (i, get_init_label s2)
+                                  (add (i, get_init_label s1) (union (get_flow s1) (get_flow s2)))
       | ExtWhile (i, cond, s) -> let init_s = get_init_label s in
-                                 SetInt2.add (i, init_s)
-                                          (SetInt2.union (get_flow s) (map_to_pairs (fun x -> (x, init_s)) (get_finish_labels s)))
-      | ExtRepeatUntil (i, cond, s) -> SetInt2.add (i, get_init_label s)
-                                         (SetInt2.union (get_flow s) (map_to_pairs (fun x -> (x, i)) (get_finish_labels s)))
-      | es -> SetInt2.empty
+                                 add (i, init_s) (union (get_flow s) (map_to_pairs (fun x -> (x, i)) (get_finish_labels s)))
+      | ExtRepeatUntil (i, cond, s) -> let init_s = get_init_label s in
+                                       add (i, init_s) (union (get_flow s) (map_to_pairs (fun x -> (x, i)) (get_finish_labels s)))
+      | es -> empty
 
     let rec get_dependent_subexprs var expr = match expr with
       | Expr.Const _ -> SetExpr.empty
@@ -178,6 +178,12 @@ module AnalysisGeneral = struct
         | ExtAssign (_, x, _) -> depend_on x prog
         | ExtSkip _ -> SetExpr.empty
 
+    let reverse flow = List.map (fun (x, y) -> (y, x)) flow
+
+    let inter_unit prog = prog_exprs prog
+    let inter_join prog (sets: 'SetExpr list) = List.fold_left (fun acc set -> SetExpr.inter acc set) (inter_unit prog) sets
+    let inter_leq_reversed x y = SetExpr.subset y x (* whole set is the smallest one*)
+
 end
 
 module Solver = struct
@@ -197,7 +203,6 @@ module Solver = struct
         then
           let new_target_result = join_fun [old_target_result; new_result] in
           let new_results = Expr.update label_to new_target_result cur_results in
-          Printf.eprintf "Looking for successors of %d" label_to;                     
           let new_edges = (get_successors_edges label_to) @ rest in
           (new_edges, new_results)
         else
@@ -223,12 +228,6 @@ module VB' = struct
     open ExtStmt
     open Solver
 
-    let reverse flow = List.map (fun (x, y) -> (y, x)) flow
-
-    let inter_unit prog = prog_exprs prog
-    let inter_join prog (sets: 'SetExpr list) = List.fold_left (fun acc set -> SetExpr.inter acc set) (inter_unit prog) sets
-    let inter_leq_reversed x y = SetExpr.subset y x (* whole set is the smallest one*)
-
     let vb_kills prog (label: int) = kills (get_by_label prog label) prog
     let vb_gens prog (label: int) = match (get_by_label prog label) with
         | ExtSeq _ -> failwith ("Should not be called on seq statements")
@@ -246,7 +245,27 @@ module VB' = struct
                                (vb_transfer prog) (SetInt.elements (get_finish_labels prog)) (SetExpr.empty) (inter_unit prog)
 end
 
+module AE' = struct
+    open AnalysisGeneral
+    open ExtStmt
+    open Solver
 
+    let ae_kills prog (label: int) = kills (get_by_label prog label) prog
+    let ae_gens prog (label: int) = match (get_by_label prog label) with
+        | ExtSeq _ -> failwith ("Should not be called on seq statements")
+        | ExtIf (_, cond, _, _) -> get_all_subexprs cond
+        | ExtWhile (_, cond, _) -> get_all_subexprs cond
+        | ExtRepeatUntil (_, cond, _) -> get_all_subexprs cond
+        | ExtRead (_, x) -> SetExpr.empty
+        | ExtWrite (_, e) -> get_all_subexprs e
+        | ExtAssign (_, x, e) -> SetExpr.diff (get_all_subexprs e) (depend_on x prog)
+        | ExtSkip _ -> SetExpr.empty
+
+    let ae_transfer prog label exprs = SetExpr.union (SetExpr.diff exprs (ae_kills prog label)) (ae_gens prog label)
+
+    let ae_solver prog = solve (SetInt2.elements (get_flow prog)) (inter_join prog) inter_leq_reversed
+                               (ae_transfer prog) [get_init_label prog] (SetExpr.empty) (inter_unit prog)
+end
 
 (*module PRE = struct*)
 (*    open AnalysisGeneral*)
@@ -263,13 +282,16 @@ end
 
 let describe analyzer label =
   let on_entry, on_exit = analyzer in
-  Printf.sprintf "On entry: %s # On exit: %s" (show_list (on_entry label)) (show_list (on_exit label))
+  Printf.sprintf "On entry: %s # On exit: %s: " (show_list (on_entry label)) (show_list (on_exit label))
 
 
 let optimize orig_prog =
   let prog = ExtStmt.enhance orig_prog in
   let (vb_exit, vb_entry) = VB'.vb_solver prog in
-  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe (vb_entry, vb_exit) lbl));
+  let (ae_entry, ae_exit) = AE'.ae_solver prog in
+  (*Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe (vb_entry, vb_exit) lbl));*)
+  Printf.eprintf "flow: \n%s\n" (show_flow (SetInt2.elements (AnalysisGeneral.get_flow prog)));
+  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe (ae_entry, ae_exit) lbl));
   (*Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe AE.analyze_ae prog lbl));*)
   orig_prog
 
