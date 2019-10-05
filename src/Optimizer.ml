@@ -289,9 +289,9 @@ let optimize orig_prog =
   let prog = ExtStmt.enhance orig_prog in
   let (vb_exit, vb_entry) = VB'.vb_solver prog in
   let (ae_entry, ae_exit) = AE'.ae_solver prog in
-  (*Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe (vb_entry, vb_exit) lbl));*)
   Printf.eprintf "flow: \n%s\n" (show_flow (SetInt2.elements (AnalysisGeneral.get_flow prog)));
-  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe (ae_entry, ae_exit) lbl));
-  (*Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe AE.analyze_ae prog lbl));*)
+  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe (vb_entry, vb_exit) lbl));
+  (*  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe (ae_entry, ae_exit) lbl));*)
+
   orig_prog
 

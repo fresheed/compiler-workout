@@ -1,0 +1,13 @@
+read (a);
+read (b);
+
+while (a > b) do
+  a := a - 1
+od;
+
+repeat
+  b := b + 1;
+  c := b + 2
+until b > 100;
+
+skip
