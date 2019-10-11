@@ -1,0 +1,9 @@
+read (a);
+read (b);
+
+if (a > b)
+  then c := 2 * a + (b * 3)
+  else c := 2 * a - b
+fi;
+
+d := a + (b * 3)
