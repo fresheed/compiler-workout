@@ -1,9 +1,15 @@
 read (a);
 read (b);
 
+d := b - 1;
+
 while (a > b) do
-  a := a - 1
-od;
+  a := a - 1;
+  c := b - 1
+od--;
+
+(*
+x := a - 1;
 
 repeat
   b := b + 1;
@@ -11,3 +17,4 @@ repeat
 until b > 100;
 
 skip
+*)

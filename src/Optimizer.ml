@@ -100,6 +100,7 @@ module AnalysisGeneral = struct
 
     let map_to_pairs mapper set_singles = SetInt2.of_list (List.map mapper (SetInt.elements set_singles))
 
+    (*let get_flow stmt = SetInt2.empty*)
     let rec get_flow stmt =
       let (union, add, empty) = (SetInt2.union, SetInt2.add, SetInt2.empty) in
       match stmt with
@@ -267,18 +268,47 @@ module AE' = struct
                                (ae_transfer prog) [get_init_label prog] (SetExpr.empty) (inter_unit prog)
 end
 
-(*module PRE = struct*)
-(*    open AnalysisGeneral*)
-(*    open ExtStmt*)
+module PRE = struct
+   (*taken from:     https://engineering.purdue.edu/~milind/ece663/2010spring/lecture-02.pdf *)
 
-(*    let (vb_entry, _) = VB.analyze_vb prog in*)
-(*    let (_, ae_exit) = AE.analyze_ae prog in*)
-(*    let downsafe label =  vb_entry label in*)
-(*    let upsafe label = ae_exit label in*)
-(*    let cannot_use label = kills (get_by_label prog label) prog || (! ())*)
+    open AnalysisGeneral
+    open ExtStmt
 
-(*    let earliest prog expr label = downsafe label &&*)
-(*end*)
+    let compl prog st = (SetExpr.diff (prog_exprs prog) st)
+
+    let earliest prog label =
+      let (_, vb_entry) = VB'.vb_solver prog in
+      let (_, ae_exit) = AE'.ae_solver prog in
+      let downsafe lbl =  vb_entry lbl in
+      let upsafe lbl = ae_exit lbl in
+      let modifies lbl = kills (get_by_label prog lbl) prog in
+      let not_reusable lbl = SetExpr.union (modifies lbl) (compl prog (SetExpr.union (downsafe lbl) (upsafe lbl))) in
+      let prev_modified lbl = SetInt.fold (fun pred un -> SetExpr.union un (not_reusable pred))
+                              (get_predecessors prog lbl) (SetExpr.empty) in
+      SetExpr.inter (downsafe label) (prev_modified label)
+
+    let used = VB'.vb_gens
+    (* delayable && not used *)
+    let dnu_transfer prog label dnu_pred = SetExpr.diff (SetExpr.union dnu_pred (earliest prog label)) (used prog label)
+    let dnu_solver prog = Solver.solve (SetInt2.elements (get_flow prog)) (inter_join prog) inter_leq_reversed
+                               (dnu_transfer prog) [get_init_label prog] (SetExpr.empty) (inter_unit prog)
+
+    (* despite the post-analysis is the main one, delayability is restored from pre-analysis *)
+    (* since otherwise unwanted expressions could be added *)
+    let delayable prog label = let (dnu_before, _) = dnu_solver prog in
+                               SetExpr.union (dnu_before label) (earliest prog label)
+
+    let latest prog label =
+      let prev_not_delayable lbl = SetInt.fold (fun pred un -> SetExpr.union un (compl prog (delayable prog pred)))
+                                   (get_successors prog lbl) (SetExpr.empty) in
+      SetExpr.inter (delayable prog label) (SetExpr.union (used prog label) (prev_not_delayable label))
+
+    let describe_PRE prog label =
+      let earliest_here = show_list (earliest prog label) in
+      let delayable_here = show_list (delayable prog label) in
+      let latest_here = show_list (latest prog label) in
+      Printf.sprintf " earliest: %s, delayable: %s, latest: %s" (earliest_here) (delayable_here) (latest_here)
+end
 
 let describe analyzer label =
   let on_entry, on_exit = analyzer in
@@ -289,9 +319,10 @@ let optimize orig_prog =
   let prog = ExtStmt.enhance orig_prog in
   let (vb_exit, vb_entry) = VB'.vb_solver prog in
   let (ae_entry, ae_exit) = AE'.ae_solver prog in
-  Printf.eprintf "flow: \n%s\n" (show_flow (SetInt2.elements (AnalysisGeneral.get_flow prog)));
-  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe (vb_entry, vb_exit) lbl));
-  (*  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe (ae_entry, ae_exit) lbl));*)
-
+(*  Printf.eprintf "flow: \n%s\n" (show_flow (SetInt2.elements (AnalysisGeneral.get_flow prog)));*)
+  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> PRE.describe_PRE prog lbl));
+(*  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe (ae_entry, ae_exit) lbl));*)
+(*  Printf.eprintf "program: \n%s\n" (ExtStmt.tostring prog  (fun lbl -> describe (vb_entry, vb_exit) lbl));*)
   orig_prog
+
 
